@@ -1,0 +1,14 @@
+[package]
+name = "git-diff-tui"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "gdf"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = "0.30"
+crossterm = "0.29"
+git2 = "0.20"
+syntect = { version = "5.3", default-features = false, features = ["default-fancy"] }
