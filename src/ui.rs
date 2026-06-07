@@ -6,6 +6,19 @@ use ratatui::Frame;
 
 use crate::app::App;
 
+/// 制御文字を可視のプレースホルダに置き換えてから表示する。
+///
+/// git2 はファイル名をほぼ生バイト列のまま返すため、悪意あるリポジトリが
+/// ファイル名に ESC/CSI などの制御シーケンスを仕込んでいると、`Span::raw`
+/// 経由でそのまま端末に書き込まれ、カーソル移動や配色変更を注入されうる
+/// （端末エスケープ・インジェクション）。タブ・改行も含む制御文字を
+/// U+FFFD に置換して無害化する。
+fn sanitize_for_display(path: &str) -> String {
+    path.chars()
+        .map(|c| if c.is_control() { '\u{FFFD}' } else { c })
+        .collect()
+}
+
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -51,7 +64,7 @@ fn draw_file_list(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect)
                     format!("{} ", entry.kind.label()),
                     Style::default().fg(kind_color).add_modifier(Modifier::BOLD),
                 ),
-                Span::raw(&entry.path),
+                Span::raw(sanitize_for_display(&entry.path)),
             ]);
             ListItem::new(line)
         })
@@ -168,4 +181,23 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 
     let bar = Paragraph::new(status).style(Style::default().bg(Color::Rgb(30, 30, 30)));
     frame.render_widget(bar, area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sanitize_for_display;
+
+    #[test]
+    fn keeps_normal_paths_unchanged() {
+        assert_eq!(sanitize_for_display("src/ui.rs"), "src/ui.rs");
+        assert_eq!(sanitize_for_display("ディレクトリ/ファイル.rs"), "ディレクトリ/ファイル.rs");
+    }
+
+    #[test]
+    fn replaces_escape_and_control_chars() {
+        // ESC[31m のような色変更シーケンスや改行・タブを無害化する
+        assert_eq!(sanitize_for_display("a\x1b[31mb"), "a\u{FFFD}[31mb");
+        assert_eq!(sanitize_for_display("a\nb\tc"), "a\u{FFFD}b\u{FFFD}c");
+        assert_eq!(sanitize_for_display("a\x7fb"), "a\u{FFFD}b");
+    }
 }
