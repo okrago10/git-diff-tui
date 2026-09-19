@@ -24,8 +24,8 @@ Ghostty ターミナルでは VSCode のソースコントロールパネルの�
 |-------|-----------|------|------|
 | ratatui | 0.30 | TUI フレームワーク（crossterm バックエンド） | 0.30 でモジュラーワークスペース化。メインクレートが全 re-export するため影響なし |
 | crossterm | 0.29 | ターミナル制御・キーイベント | ratatui 0.30 のデフォルトバックエンド。イベント処理 API のために直接依存 |
-| git2 | 0.20 | libgit2 バインディング（差分取得） | ビルド時に libgit2 を C ソースからコンパイル（cmake が必要になる場合あり） |
-| syntect | 5.3 | シンタックスハイライト | default-fancy feature で pure Rust regex エンジンを使用 |
+| git2 | 0.21 | libgit2 バインディング（差分取得） | ビルド時に libgit2 を C ソースからコンパイル（cmake が必要になる場合あり） |
+| syntect | 5.3 | シンタックスハイライト | `default-features = false` + `default-syntaxes` / `default-themes` / `regex-fancy` のみ。pure Rust regex エンジンを使い、外部定義の実行時ロード（`yaml-load` / `plist-load`）は無効 |
 
 ## セキュリティ対策
 
@@ -33,7 +33,9 @@ Ghostty ターミナルでは VSCode のソースコントロールパネルの�
 2. `cargo audit` を定期的に実行
    - git push 前に自動実行（pre-push フック）
    - 月一で手動実行
-3. syntect は内蔵構文定義のみ使用（外部 .sublime-syntax の読み込みは行わない）
+3. syntect は内蔵構文定義のみ使用（外部 .sublime-syntax / .tmTheme の読み込みは行わない）
+   - `yaml-load` / `plist-load` feature を無効化してこの方針を依存関係の側から強制する
+     （これにより unmaintained な yaml-rust が依存グラフに入らない）
 4. ファイルパス表示時の ANSI エスケープシーケンスに留意
 5. git2 の使用は読み取り系 API に限定し、Index 書き込み系（`Index::add` 等）は使用しない
 
