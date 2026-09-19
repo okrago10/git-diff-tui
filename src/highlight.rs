@@ -98,56 +98,97 @@ fn syntect_to_ratatui_style(style: Style, bg_override: Option<Color>) -> ratatui
 mod tests {
     use super::Highlighter;
     use crate::git::{DiffLine, DiffLineKind};
+    use std::sync::OnceLock;
 
-    /// syntect の feature を絞りすぎるとデフォルトのシンタックス定義／テーマが
-    /// 同梱されなくなり、`Highlighter::new()` 後のテーマ参照で panic する。
-    /// ビルドは通ってしまうため、テストで実行時に読めることを確認する。
+    /// `Highlighter::new()` は同梱ダンプ（数 MB）を毎回展開・デシリアライズする
+    /// ため、テスト間で使い回す。`highlight_diff` は `&self` で、呼び出しごとに
+    /// `HighlightLines` を作るので共有して問題ない。
+    fn highlighter() -> &'static Highlighter {
+        static H: OnceLock<Highlighter> = OnceLock::new();
+        H.get_or_init(Highlighter::new)
+    }
+
+    /// 同梱のデフォルト構文定義とテーマが実行時に読めることを確認する。
+    ///
+    /// syntect の `default-syntaxes` / `default-themes` feature を外すと
+    /// `load_defaults_newlines()` / `load_defaults()` 自体が消えてコンパイル
+    /// エラーになるため、feature の外し忘れはビルドで気付ける。一方、
+    /// syntect の更新で同梱ダンプの中身（テーマ名など）が変わった場合は
+    /// ビルドが通ったまま実行時に落ちる。`themes[..]` はインデックス
+    /// アクセスで、TUI が raw mode に入った後の描画中に panic するため、
+    /// ここで先に検出する。
     #[test]
     fn loads_default_syntaxes_and_theme() {
-        let h = Highlighter::new();
+        let h = highlighter();
         assert!(h.syntax_set.find_syntax_by_extension("rs").is_some());
         assert!(h.theme_set.themes.contains_key("base16-ocean.dark"));
     }
 
+    fn render(line: &super::HighlightedLine) -> String {
+        line.spans.iter().map(|(_, t)| t.as_str()).collect()
+    }
+
+    /// ハイライトを通してもテキストが失われないこと。
+    ///
+    /// フィクスチャは実際の `GitRepo::file_diff` の出力に合わせてある。
+    /// libgit2 は `+` / `-` を `line.origin()` として別に返すため、
+    /// `DiffLine::content` には行頭マーカーが含まれない（src/git.rs 参照）。
     #[test]
-    fn highlights_diff_lines_with_prefix_preserved() {
-        let h = Highlighter::new();
+    fn preserves_text_of_diff_lines() {
         let lines = vec![
             DiffLine {
-                kind: DiffLineKind::Addition,
-                content: "+let x = 1;\n".to_string(),
+                kind: DiffLineKind::HunkHeader,
+                content: "@@ -1,3 +1,3 @@ fn main() {\n".to_string(),
             },
             DiffLine {
                 kind: DiffLineKind::Deletion,
-                content: "-let x = 0;\n".to_string(),
+                content: "    let x = 0;\n".to_string(),
+            },
+            DiffLine {
+                kind: DiffLineKind::Addition,
+                content: "    let x = 1;\n".to_string(),
             },
             DiffLine {
                 kind: DiffLineKind::Context,
-                content: " fn main() {}\n".to_string(),
+                content: "    println!(\"{x}\");\n".to_string(),
             },
         ];
 
-        let out = h.highlight_diff(&lines, Some("src/main.rs"));
-        assert_eq!(out.len(), 3);
+        let out = highlighter().highlight_diff(&lines, Some("src/main.rs"));
+        let rendered: Vec<String> = out.iter().map(render).collect();
 
-        let rendered: Vec<String> = out
-            .iter()
-            .map(|l| l.spans.iter().map(|(_, t)| t.as_str()).collect())
-            .collect();
-        assert_eq!(rendered[0], "+let x = 1;\n");
-        assert_eq!(rendered[1], "-let x = 0;\n");
-        assert_eq!(rendered[2], " fn main() {}\n");
+        assert_eq!(
+            rendered,
+            vec![
+                "@@ -1,3 +1,3 @@ fn main() {\n",
+                "    let x = 0;\n",
+                "    let x = 1;\n",
+                "    println!(\"{x}\");\n",
+            ]
+        );
     }
 
-    /// 未知の拡張子でもプレーンテキストにフォールバックして落ちないこと。
+    /// 未知の拡張子ではプレーンテキストにフォールバックし、内容を保つこと。
     #[test]
     fn falls_back_to_plain_text_for_unknown_extension() {
-        let h = Highlighter::new();
         let lines = vec![DiffLine {
             kind: DiffLineKind::Context,
             content: "hello\n".to_string(),
         }];
-        let out = h.highlight_diff(&lines, Some("data.unknownext"));
+        let out = highlighter().highlight_diff(&lines, Some("data.unknownext"));
         assert_eq!(out.len(), 1);
+        assert_eq!(render(&out[0]), "hello\n");
+    }
+
+    /// パスが無い場合（拡張子なし・選択なし）も落ちず、内容を保つこと。
+    #[test]
+    fn handles_missing_file_path() {
+        let lines = vec![DiffLine {
+            kind: DiffLineKind::Context,
+            content: "plain\n".to_string(),
+        }];
+        let out = highlighter().highlight_diff(&lines, None);
+        assert_eq!(out.len(), 1);
+        assert_eq!(render(&out[0]), "plain\n");
     }
 }
