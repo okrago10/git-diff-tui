@@ -42,16 +42,23 @@ impl App {
         app
     }
 
-    /// git 読み取りの結果を記録して中身を取り出す。
-    /// 失敗なら理由を残し、成功なら前の失敗を消す。
-    fn record<T>(&mut self, result: Result<T, git2::Error>) -> Option<T> {
+    /// git 読み取りの結果から中身を取り出す。失敗なら理由を記録して `None`
+    /// を返し、成功すれば前の失敗を消す。
+    ///
+    /// `what` は何をしようとしていたかの説明。git2 のメッセージ単体では
+    /// 「何に失敗したのか」が読み取れないことが多いので前置きに使う。
+    fn ok_or_record_error<T>(
+        &mut self,
+        what: &str,
+        result: Result<T, git2::Error>,
+    ) -> Option<T> {
         match result {
             Ok(value) => {
                 self.last_error = None;
                 Some(value)
             }
             Err(error) => {
-                self.last_error = Some(error.message().to_string());
+                self.last_error = Some(format!("{what}: {}", error.message()));
                 None
             }
         }
@@ -60,7 +67,9 @@ impl App {
     /// ファイル一覧を読み直し、選択と diff を合わせる。
     fn reload_files(&mut self) {
         let result = self.source.changed_files();
-        self.files = self.record(result).unwrap_or_default();
+        self.files = self
+            .ok_or_record_error("listing changed files", result)
+            .unwrap_or_default();
         if self.files.is_empty() {
             self.list_state.select(None);
         } else {
@@ -140,7 +149,8 @@ impl App {
         let diff = match self.list_state.selected() {
             Some(i) if i < self.files.len() => {
                 let result = self.source.file_diff(&self.files[i]);
-                self.record(result).unwrap_or_default()
+                self.ok_or_record_error("reading diff", result)
+                    .unwrap_or_default()
             }
             _ => Vec::new(),
         };
@@ -151,6 +161,7 @@ impl App {
         self.viewport.set_content(&self.highlighted_diff);
     }
 
+    /// `r` キー。一覧を読み直し、表示位置も先頭に戻す。
     fn refresh(&mut self) {
         self.reload_files();
         self.viewport.reset();
@@ -178,7 +189,10 @@ mod tests {
 
         let app = App::new(source);
 
-        assert_eq!(app.last_error.as_deref(), Some("index is corrupt"));
+        assert_eq!(
+            app.last_error.as_deref(),
+            Some("listing changed files: index is corrupt")
+        );
         assert!(app.files.is_empty());
     }
 
@@ -192,7 +206,10 @@ mod tests {
 
         let app = App::new(source);
 
-        assert_eq!(app.last_error.as_deref(), Some("object not found"));
+        assert_eq!(
+            app.last_error.as_deref(),
+            Some("reading diff: object not found")
+        );
         assert!(app.highlighted_diff.is_empty());
     }
 

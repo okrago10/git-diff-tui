@@ -8,13 +8,13 @@ use crate::app::App;
 
 /// 制御文字を可視のプレースホルダに置き換えてから表示する。
 ///
-/// git2 はファイル名をほぼ生バイト列のまま返すため、悪意あるリポジトリが
-/// ファイル名に ESC/CSI などの制御シーケンスを仕込んでいると、`Span::raw`
-/// 経由でそのまま端末に書き込まれ、カーソル移動や配色変更を注入されうる
-/// （端末エスケープ・インジェクション）。タブ・改行も含む制御文字を
-/// U+FFFD に置換して無害化する。
-fn sanitize_for_display(path: &str) -> String {
-    path.chars()
+/// 端末に出す文字列のうち外から来たもの（git2 が返すファイル名やエラー
+/// メッセージ）は、ほぼ生バイト列のまま渡ってくる。ESC/CSI などの制御
+/// シーケンスが仕込まれていると、`Span::raw` 経由でそのまま端末に書き込まれ、
+/// カーソル移動や配色変更を注入されうる（端末エスケープ・インジェクション）。
+/// タブ・改行も含む制御文字を U+FFFD に置換して無害化する。
+fn sanitize_for_display(text: &str) -> String {
+    text.chars()
         .map(|c| if c.is_control() { '\u{FFFD}' } else { c })
         .collect()
 }
@@ -154,8 +154,7 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
                 Style::default().fg(Color::Red),
             ),
         ]);
-        let bar = Paragraph::new(status).style(Style::default().bg(Color::Rgb(30, 30, 30)));
-        frame.render_widget(bar, area);
+        frame.render_widget(status_bar(status), area);
         return;
     }
 
@@ -210,8 +209,12 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         Span::styled(": quit", Style::default().fg(Color::DarkGray)),
     ]);
 
-    let bar = Paragraph::new(status).style(Style::default().bg(Color::Rgb(30, 30, 30)));
-    frame.render_widget(bar, area);
+    frame.render_widget(status_bar(status), area);
+}
+
+/// ステータスバー 1 行ぶんの見た目。正常時もエラー時も同じ地色で描く。
+fn status_bar(content: Line<'_>) -> Paragraph<'_> {
+    Paragraph::new(content).style(Style::default().bg(Color::Rgb(30, 30, 30)))
 }
 
 #[cfg(test)]
