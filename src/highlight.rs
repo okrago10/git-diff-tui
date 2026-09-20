@@ -29,7 +29,7 @@ impl HighlightedLine {
     }
 }
 
-/// ヘッダ行の文字色。構文ハイライトを当てないので UI 側で決める。
+/// ヘッダ行の文字色。構文ハイライトを当てないので、この表示側で決める。
 const HEADER_FOREGROUND: Color = Color::White;
 
 const BG_ADDITION: Color = Color::Rgb(0, 60, 0);
@@ -100,13 +100,8 @@ impl Highlighter {
 
                 let mut spans = Vec::new();
 
-                if !decoration.marker.is_empty() {
-                    spans.push((
-                        ratatui::style::Style::default()
-                            .fg(decoration.marker_color)
-                            .bg(decoration.background.unwrap_or(Color::Reset)),
-                        decoration.marker.to_string(),
-                    ));
+                if let Some((marker, color)) = decoration.marker {
+                    spans.push((decoration.plain_style(color), marker.to_string()));
                 }
 
                 match parsed {
@@ -119,9 +114,7 @@ impl Highlighter {
                         }
                     }
                     None => spans.push((
-                        ratatui::style::Style::default()
-                            .fg(HEADER_FOREGROUND)
-                            .bg(decoration.background.unwrap_or(Color::Reset)),
+                        decoration.plain_style(HEADER_FOREGROUND),
                         line.content.clone(),
                     )),
                 }
@@ -150,43 +143,47 @@ enum SyntaxSide {
 
 /// 行種別から決まる見た目と読み方。行種別に対する分岐はここ 1 箇所に集める。
 struct LineDecoration {
-    /// unified diff の行頭マーカー。ヘッダ行はそれ自体が書式を持つので空。
-    marker: &'static str,
-    marker_color: Color,
+    /// unified diff の行頭マーカーと、その文字色。
+    /// ヘッダ行はそれ自体が書式を持つのでマーカーを付けない。
+    marker: Option<(&'static str, Color)>,
     background: Option<Color>,
     side: SyntaxSide,
+}
+
+impl LineDecoration {
+    /// 構文ハイライトを当てない部分（マーカーとヘッダ行）の書式。
+    fn plain_style(&self, foreground: Color) -> ratatui::style::Style {
+        ratatui::style::Style::default()
+            .fg(foreground)
+            .bg(self.background.unwrap_or(Color::Reset))
+    }
 }
 
 impl LineDecoration {
     fn for_kind(kind: DiffLineKind) -> Self {
         match kind {
             DiffLineKind::Addition => Self {
-                marker: "+",
-                marker_color: Color::Green,
+                marker: Some(("+", Color::Green)),
                 background: Some(BG_ADDITION),
                 side: SyntaxSide::New,
             },
             DiffLineKind::Deletion => Self {
-                marker: "-",
-                marker_color: Color::Red,
+                marker: Some(("-", Color::Red)),
                 background: Some(BG_DELETION),
                 side: SyntaxSide::Old,
             },
             DiffLineKind::Context => Self {
-                marker: " ",
-                marker_color: Color::White,
+                marker: Some((" ", Color::White)),
                 background: None,
                 side: SyntaxSide::Both,
             },
             DiffLineKind::HunkHeader => Self {
-                marker: "",
-                marker_color: Color::White,
+                marker: None,
                 background: Some(BG_HUNK_HEADER),
                 side: SyntaxSide::Boundary,
             },
             DiffLineKind::FileHeader => Self {
-                marker: "",
-                marker_color: Color::White,
+                marker: None,
                 background: None,
                 side: SyntaxSide::Boundary,
             },
