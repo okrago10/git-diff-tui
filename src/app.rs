@@ -3,13 +3,13 @@ use ratatui::widgets::ListState;
 
 use crate::git::{DiffLine, FileEntry, GitRepo};
 use crate::highlight::Highlighter;
+use crate::viewport::{self, DiffViewport};
 
 pub struct App {
     pub files: Vec<FileEntry>,
     pub list_state: ListState,
     pub current_diff: Vec<DiffLine>,
-    pub diff_scroll: u16,
-    pub diff_hscroll: u16,
+    pub viewport: DiffViewport,
     pub should_quit: bool,
     git_repo: GitRepo,
     pub highlighter: Highlighter,
@@ -22,8 +22,7 @@ impl App {
             files,
             list_state: ListState::default(),
             current_diff: Vec::new(),
-            diff_scroll: 0,
-            diff_hscroll: 0,
+            viewport: DiffViewport::new(),
             should_quit: false,
             git_repo,
             highlighter: Highlighter::new(),
@@ -56,11 +55,11 @@ impl App {
             // horizontal scroll
             KeyCode::Char('l') | KeyCode::Right => self.scroll_diff_right(4),
             KeyCode::Char('h') | KeyCode::Left => self.scroll_diff_left(4),
-            KeyCode::Char('0') => self.diff_hscroll = 0,
+            KeyCode::Char('0') => self.viewport.scroll_to_left(),
 
             // jump
-            KeyCode::Char('g') => self.diff_scroll = 0,
-            KeyCode::Char('G') => self.scroll_to_end(),
+            KeyCode::Char('g') => self.viewport.scroll_to_top(),
+            KeyCode::Char('G') => self.viewport.scroll_to_end(),
 
             // refresh
             KeyCode::Char('r') => self.refresh(),
@@ -78,8 +77,7 @@ impl App {
             None => 0,
         };
         self.list_state.select(Some(i));
-        self.diff_scroll = 0;
-        self.diff_hscroll = 0;
+        self.viewport.reset();
         self.update_diff();
     }
 
@@ -92,30 +90,24 @@ impl App {
             None => 0,
         };
         self.list_state.select(Some(i));
-        self.diff_scroll = 0;
-        self.diff_hscroll = 0;
+        self.viewport.reset();
         self.update_diff();
     }
 
     pub fn scroll_diff_down(&mut self, amount: u16) {
-        self.diff_scroll = self.diff_scroll.saturating_add(amount);
+        self.viewport.scroll_by(amount as i32, 0);
     }
 
     pub fn scroll_diff_up(&mut self, amount: u16) {
-        self.diff_scroll = self.diff_scroll.saturating_sub(amount);
+        self.viewport.scroll_by(-(amount as i32), 0);
     }
 
     pub fn scroll_diff_right(&mut self, amount: u16) {
-        self.diff_hscroll = self.diff_hscroll.saturating_add(amount);
+        self.viewport.scroll_by(0, amount as i32);
     }
 
     pub fn scroll_diff_left(&mut self, amount: u16) {
-        self.diff_hscroll = self.diff_hscroll.saturating_sub(amount);
-    }
-
-    fn scroll_to_end(&mut self) {
-        let total = self.current_diff.len() as u16;
-        self.diff_scroll = total.saturating_sub(1);
+        self.viewport.scroll_by(0, -(amount as i32));
     }
 
     fn update_diff(&mut self) {
@@ -127,6 +119,9 @@ impl App {
                 .unwrap_or_default(),
             _ => Vec::new(),
         };
+        self.viewport.set_content_len(self.current_diff.len());
+        self.viewport
+            .set_content_width(viewport::content_width(&self.current_diff));
     }
 
     fn refresh(&mut self) {
@@ -143,8 +138,7 @@ impl App {
             self.list_state.select(Some(idx));
             self.update_diff();
         }
-        self.diff_scroll = 0;
-        self.diff_hscroll = 0;
+        self.viewport.reset();
     }
 
     pub fn selected_file_path(&self) -> Option<&str> {

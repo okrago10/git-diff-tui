@@ -2,6 +2,7 @@ mod app;
 mod git;
 mod highlight;
 mod ui;
+mod viewport;
 
 use std::io;
 use std::panic;
