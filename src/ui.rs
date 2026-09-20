@@ -96,7 +96,7 @@ fn draw_diff_preview(frame: &mut Frame, app: &mut App, area: ratatui::layout::Re
     let inner = block.inner(area);
     app.viewport.set_visible_size(inner.width, inner.height);
 
-    if app.current_diff.is_empty() {
+    if app.highlighted_diff.is_empty() {
         let msg = if app.files.is_empty() {
             "No changes detected"
         } else {

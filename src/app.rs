@@ -13,7 +13,8 @@ const STEP_COLUMNS: u16 = 4;
 pub struct App {
     pub files: Vec<FileEntry>,
     pub list_state: ListState,
-    pub current_diff: Vec<DiffLine>,
+    /// 表示中の diff。描画には `highlighted_diff` を使う。
+    current_diff: Vec<DiffLine>,
     /// `current_diff` にハイライトを適用した結果。描画のたびに計算し直すと
     /// 最大 10,000 行ぶんの syntect 呼び出しが毎フレーム走るため、diff が
     /// 切り替わったときにだけ更新する。
@@ -117,7 +118,7 @@ impl App {
         self.highlighted_diff = self
             .highlighter
             .highlight_diff(&self.current_diff, path.as_deref());
-        self.viewport.set_content(&self.current_diff);
+        self.viewport.set_content(&self.highlighted_diff);
     }
 
     fn refresh(&mut self) {

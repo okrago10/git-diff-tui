@@ -1,7 +1,8 @@
 use ratatui::style::Color;
 use syntect::easy::HighlightLines;
-use syntect::highlighting::{Color as SyntectColor, FontStyle, Style, ThemeSet};
+use syntect::highlighting::{Style, ThemeSet};
 use syntect::parsing::SyntaxSet;
+use unicode_width::UnicodeWidthStr;
 
 use crate::git::{DiffLine, DiffLineKind};
 
@@ -14,19 +15,22 @@ pub struct HighlightedLine {
     pub spans: Vec<(ratatui::style::Style, String)>,
 }
 
-/// テーマが前景色・背景色を持たない場合の代替。
-const DEFAULT_FOREGROUND: SyntectColor = SyntectColor {
-    r: 0xc0,
-    g: 0xc5,
-    b: 0xce,
-    a: 0xff,
-};
-const DEFAULT_BACKGROUND: SyntectColor = SyntectColor {
-    r: 0x2b,
-    g: 0x30,
-    b: 0x3b,
-    a: 0xff,
-};
+impl HighlightedLine {
+    /// この行が端末で占める幅（セル数）。
+    ///
+    /// 行頭マーカーを含んだ、実際に描かれる幅。横スクロールの上限に使う。
+    /// 全角文字は 2 セルを占めるため文字数とは一致せず、行末の改行は
+    /// 表示されないので含めない。
+    pub fn display_width(&self) -> usize {
+        self.spans
+            .iter()
+            .map(|(_, text)| UnicodeWidthStr::width(text.trim_end_matches(['\n', '\r'])))
+            .sum()
+    }
+}
+
+/// ヘッダ行の文字色。構文ハイライトを当てないので UI 側で決める。
+const HEADER_FOREGROUND: Color = Color::White;
 
 const BG_ADDITION: Color = Color::Rgb(0, 60, 0);
 const BG_DELETION: Color = Color::Rgb(80, 0, 0);
@@ -40,7 +44,11 @@ impl Highlighter {
         }
     }
 
-    pub fn highlight_diff(&self, lines: &[DiffLine], file_path: Option<&str>) -> Vec<HighlightedLine> {
+    pub fn highlight_diff(
+        &self,
+        lines: &[DiffLine],
+        file_path: Option<&str>,
+    ) -> Vec<HighlightedLine> {
         let syntax = file_path
             .and_then(|p| {
                 let ext = std::path::Path::new(p).extension()?.to_str()?;
@@ -54,60 +62,68 @@ impl Highlighter {
         // ままの状態がもう片側に漏れないよう、2 本に分ける。
         let mut new_side = HighlightLines::new(syntax, theme);
         let mut old_side = HighlightLines::new(syntax, theme);
-        // ヘッダ行はソースコードではないので、テーマの既定色で一様に描く。
-        let header_style = Style {
-            foreground: theme.settings.foreground.unwrap_or(DEFAULT_FOREGROUND),
-            background: theme.settings.background.unwrap_or(DEFAULT_BACKGROUND),
-            font_style: FontStyle::empty(),
-        };
 
         lines
             .iter()
             .map(|line| {
-                let bg = match line.kind {
-                    DiffLineKind::Addition => Some(BG_ADDITION),
-                    DiffLineKind::Deletion => Some(BG_DELETION),
-                    DiffLineKind::HunkHeader => Some(BG_HUNK_HEADER),
-                    _ => None,
-                };
+                let decoration = LineDecoration::for_kind(line.kind);
 
-                let highlighted = match line.kind {
-                    DiffLineKind::HunkHeader | DiffLineKind::FileHeader => {
-                        Ok(vec![(header_style, line.content.as_str())])
+                // ヘッダ行はソースコードではないので構文パーサに通さない
+                let parsed = match decoration.side {
+                    SyntaxSide::Boundary => {
+                        // 別のハンク（別のファイル）に入る。前のハンクで開いた
+                        // ままの文字列やコメントは次のハンクには続かない。
+                        old_side = HighlightLines::new(syntax, theme);
+                        new_side = HighlightLines::new(syntax, theme);
+                        None
                     }
-                    DiffLineKind::Deletion => {
-                        old_side.highlight_line(&line.content, &self.syntax_set)
-                    }
-                    DiffLineKind::Context => {
+                    SyntaxSide::Old => Some(
+                        old_side
+                            .highlight_line(&line.content, &self.syntax_set)
+                            .unwrap_or_default(),
+                    ),
+                    SyntaxSide::New => Some(
+                        new_side
+                            .highlight_line(&line.content, &self.syntax_set)
+                            .unwrap_or_default(),
+                    ),
+                    SyntaxSide::Both => {
                         // 文脈行は旧版にも新版にも属するので、両方の状態を進める
                         let _ = old_side.highlight_line(&line.content, &self.syntax_set);
-                        new_side.highlight_line(&line.content, &self.syntax_set)
+                        Some(
+                            new_side
+                                .highlight_line(&line.content, &self.syntax_set)
+                                .unwrap_or_default(),
+                        )
                     }
-                    DiffLineKind::Addition => {
-                        new_side.highlight_line(&line.content, &self.syntax_set)
-                    }
-                }
-                .unwrap_or_default();
+                };
 
-                let mut spans = Vec::with_capacity(highlighted.len() + 1);
+                let mut spans = Vec::new();
 
-                // 行頭マーカー（unified diff と同じ +/-/空白）
-                let marker = marker_for(line.kind);
-                if !marker.is_empty() {
-                    let marker_style = ratatui::style::Style::default()
-                        .fg(match line.kind {
-                            DiffLineKind::Addition => Color::Green,
-                            DiffLineKind::Deletion => Color::Red,
-                            _ => Color::White,
-                        })
-                        .bg(bg.unwrap_or(Color::Reset));
-                    spans.push((marker_style, marker.to_string()));
+                if !decoration.marker.is_empty() {
+                    spans.push((
+                        ratatui::style::Style::default()
+                            .fg(decoration.marker_color)
+                            .bg(decoration.background.unwrap_or(Color::Reset)),
+                        decoration.marker.to_string(),
+                    ));
                 }
 
-                // highlighted code spans
-                for (style, text) in highlighted {
-                    let ratatui_style = syntect_to_ratatui_style(style, bg);
-                    spans.push((ratatui_style, text.to_string()));
+                match parsed {
+                    Some(highlighted) => {
+                        for (style, text) in highlighted {
+                            spans.push((
+                                syntect_to_ratatui_style(style, decoration.background),
+                                text.to_string(),
+                            ));
+                        }
+                    }
+                    None => spans.push((
+                        ratatui::style::Style::default()
+                            .fg(HEADER_FOREGROUND)
+                            .bg(decoration.background.unwrap_or(Color::Reset)),
+                        line.content.clone(),
+                    )),
                 }
 
                 HighlightedLine { spans }
@@ -116,13 +132,65 @@ impl Highlighter {
     }
 }
 
-/// unified diff の行頭マーカー。ヘッダ行はそれ自体が書式を持つので付けない。
-fn marker_for(kind: DiffLineKind) -> &'static str {
-    match kind {
-        DiffLineKind::Addition => "+",
-        DiffLineKind::Deletion => "-",
-        DiffLineKind::Context => " ",
-        DiffLineKind::HunkHeader | DiffLineKind::FileHeader => "",
+/// diff の行がどちらの版のコードに属するか。
+///
+/// syntect のパーサは文字列やブロックコメントの継続を行をまたいで持つ。
+/// 旧版と新版は別々の状態で読む必要があり、diff 自身の書式であるヘッダ行は
+/// どちらの状態にも入れてはいけない。
+enum SyntaxSide {
+    /// 旧版のみ（削除行）
+    Old,
+    /// 新版のみ（追加行）
+    New,
+    /// 両方（文脈行）
+    Both,
+    /// ソースコードではなく、ハンクやファイルの切れ目（ヘッダ行）
+    Boundary,
+}
+
+/// 行種別から決まる見た目と読み方。行種別に対する分岐はここ 1 箇所に集める。
+struct LineDecoration {
+    /// unified diff の行頭マーカー。ヘッダ行はそれ自体が書式を持つので空。
+    marker: &'static str,
+    marker_color: Color,
+    background: Option<Color>,
+    side: SyntaxSide,
+}
+
+impl LineDecoration {
+    fn for_kind(kind: DiffLineKind) -> Self {
+        match kind {
+            DiffLineKind::Addition => Self {
+                marker: "+",
+                marker_color: Color::Green,
+                background: Some(BG_ADDITION),
+                side: SyntaxSide::New,
+            },
+            DiffLineKind::Deletion => Self {
+                marker: "-",
+                marker_color: Color::Red,
+                background: Some(BG_DELETION),
+                side: SyntaxSide::Old,
+            },
+            DiffLineKind::Context => Self {
+                marker: " ",
+                marker_color: Color::White,
+                background: None,
+                side: SyntaxSide::Both,
+            },
+            DiffLineKind::HunkHeader => Self {
+                marker: "",
+                marker_color: Color::White,
+                background: Some(BG_HUNK_HEADER),
+                side: SyntaxSide::Boundary,
+            },
+            DiffLineKind::FileHeader => Self {
+                marker: "",
+                marker_color: Color::White,
+                background: None,
+                side: SyntaxSide::Boundary,
+            },
+        }
     }
 }
 
@@ -175,6 +243,13 @@ mod tests {
             .collect()
     }
 
+    fn line(kind: DiffLineKind, content: &str) -> DiffLine {
+        DiffLine {
+            kind,
+            content: content.to_string(),
+        }
+    }
+
     fn render(line: &super::HighlightedLine) -> String {
         line.spans.iter().map(|(_, t)| t.as_str()).collect()
     }
@@ -188,22 +263,10 @@ mod tests {
     #[test]
     fn preserves_text_of_diff_lines() {
         let lines = vec![
-            DiffLine {
-                kind: DiffLineKind::HunkHeader,
-                content: "@@ -1,3 +1,3 @@ fn main() {\n".to_string(),
-            },
-            DiffLine {
-                kind: DiffLineKind::Deletion,
-                content: "    let x = 0;\n".to_string(),
-            },
-            DiffLine {
-                kind: DiffLineKind::Addition,
-                content: "    let x = 1;\n".to_string(),
-            },
-            DiffLine {
-                kind: DiffLineKind::Context,
-                content: "    println!(\"{x}\");\n".to_string(),
-            },
+            line(DiffLineKind::HunkHeader, "@@ -1,3 +1,3 @@ fn main() {\n"),
+            line(DiffLineKind::Deletion, "    let x = 0;\n"),
+            line(DiffLineKind::Addition, "    let x = 1;\n"),
+            line(DiffLineKind::Context, "    println!(\"{x}\");\n"),
         ];
 
         let out = highlighter().highlight_diff(&lines, Some("src/main.rs"));
@@ -228,18 +291,9 @@ mod tests {
     #[test]
     fn prefixes_lines_with_diff_marker() {
         let lines = vec![
-            DiffLine {
-                kind: DiffLineKind::Deletion,
-                content: "let x = 0;\n".to_string(),
-            },
-            DiffLine {
-                kind: DiffLineKind::Addition,
-                content: "let x = 1;\n".to_string(),
-            },
-            DiffLine {
-                kind: DiffLineKind::Context,
-                content: "let y = 2;\n".to_string(),
-            },
+            line(DiffLineKind::Deletion, "let x = 0;\n"),
+            line(DiffLineKind::Addition, "let x = 1;\n"),
+            line(DiffLineKind::Context, "let y = 2;\n"),
         ];
 
         let out = highlighter().highlight_diff(&lines, Some("src/main.rs"));
@@ -256,14 +310,8 @@ mod tests {
     /// そこから下の配色がすべてずれる。
     #[test]
     fn deletion_does_not_leak_parser_state_into_addition() {
-        let addition = DiffLine {
-            kind: DiffLineKind::Addition,
-            content: "let ok = 1;\n".to_string(),
-        };
-        let deletion_with_open_string = DiffLine {
-            kind: DiffLineKind::Deletion,
-            content: "let s = \"unterminated;\n".to_string(),
-        };
+        let addition = line(DiffLineKind::Addition, "let ok = 1;\n");
+        let deletion_with_open_string = line(DiffLineKind::Deletion, "let s = \"unterminated;\n");
 
         let alone = highlighter().highlight_diff(std::slice::from_ref(&addition), Some("a.rs"));
         let after_deletion =
@@ -277,14 +325,8 @@ mod tests {
     /// 入り、そこから下の行の配色がずれる。
     #[test]
     fn does_not_parse_headers_as_source_code() {
-        let header = DiffLine {
-            kind: DiffLineKind::HunkHeader,
-            content: "@@ -1,3 +1,3 @@ fn main() {\n".to_string(),
-        };
-        let context = DiffLine {
-            kind: DiffLineKind::Context,
-            content: "let x = 1;\n".to_string(),
-        };
+        let header = line(DiffLineKind::HunkHeader, "@@ -1,3 +1,3 @@ fn main() {\n");
+        let context = line(DiffLineKind::Context, "let x = 1;\n");
 
         let alone = highlighter().highlight_diff(std::slice::from_ref(&context), Some("a.rs"));
         let after_header = highlighter().highlight_diff(&[header, context], Some("a.rs"));
@@ -300,23 +342,13 @@ mod tests {
     /// 追加行で配色が食い違う。
     #[test]
     fn context_advances_both_sides() {
-        let comment_opens = DiffLine {
-            kind: DiffLineKind::Context,
-            content: "/* comment starts here\n".to_string(),
-        };
-        let inside = "still inside the comment\n".to_string();
+        let inside = "still inside the comment\n";
 
         let out = highlighter().highlight_diff(
             &[
-                comment_opens,
-                DiffLine {
-                    kind: DiffLineKind::Deletion,
-                    content: inside.clone(),
-                },
-                DiffLine {
-                    kind: DiffLineKind::Addition,
-                    content: inside,
-                },
+                line(DiffLineKind::Context, "/* comment starts here\n"),
+                line(DiffLineKind::Deletion, inside),
+                line(DiffLineKind::Addition, inside),
             ],
             Some("a.rs"),
         );
@@ -325,13 +357,40 @@ mod tests {
         assert_eq!(body_syntax(&out[1]), body_syntax(&out[2]));
     }
 
+    /// ハンクが変われば、前のハンクで開いたままの構文状態は次のハンクには
+    /// 続かない。ヘッダを構文パーサに通さないだけでは状態が残ってしまう。
+    #[test]
+    fn hunk_header_resets_parser_state() {
+        let code = line(DiffLineKind::Context, "plain code\n");
+
+        let alone = highlighter().highlight_diff(std::slice::from_ref(&code), Some("a.rs"));
+        let after_new_hunk = highlighter().highlight_diff(
+            &[
+                line(DiffLineKind::Context, "let s = \"unterminated;\n"),
+                line(DiffLineKind::HunkHeader, "@@ -10,3 +10,3 @@\n"),
+                code,
+            ],
+            Some("a.rs"),
+        );
+
+        assert_eq!(after_new_hunk[2].spans, alone[0].spans);
+    }
+
+    /// 横スクロールの上限は実際に描かれる幅で決まる。マーカーは描画時に
+    /// 足されるので、行の幅にも含まれていなければ最長行の右端 1 文字を
+    /// 画面内に出せない。
+    #[test]
+    fn display_width_includes_marker() {
+        let out =
+            highlighter().highlight_diff(&[line(DiffLineKind::Addition, "abc\n")], Some("a.rs"));
+
+        assert_eq!(out[0].display_width(), 4);
+    }
+
     /// 未知の拡張子ではプレーンテキストにフォールバックし、内容を保つこと。
     #[test]
     fn falls_back_to_plain_text_for_unknown_extension() {
-        let lines = vec![DiffLine {
-            kind: DiffLineKind::Context,
-            content: "hello\n".to_string(),
-        }];
+        let lines = vec![line(DiffLineKind::Context, "hello\n")];
         let out = highlighter().highlight_diff(&lines, Some("data.unknownext"));
         assert_eq!(out.len(), 1);
         assert_eq!(render(&out[0]), " hello\n");
@@ -340,10 +399,7 @@ mod tests {
     /// パスが無い場合（拡張子なし・選択なし）も落ちず、内容を保つこと。
     #[test]
     fn handles_missing_file_path() {
-        let lines = vec![DiffLine {
-            kind: DiffLineKind::Context,
-            content: "plain\n".to_string(),
-        }];
+        let lines = vec![line(DiffLineKind::Context, "plain\n")];
         let out = highlighter().highlight_diff(&lines, None);
         assert_eq!(out.len(), 1);
         assert_eq!(render(&out[0]), " plain\n");
