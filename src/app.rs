@@ -2,7 +2,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::widgets::ListState;
 
 use crate::git::{DiffLine, FileEntry, GitRepo};
-use crate::highlight::Highlighter;
+use crate::highlight::{HighlightedLine, Highlighter};
 use crate::viewport::DiffViewport;
 
 /// `J` / `K` / `Ctrl+d` / `Ctrl+u` で動かす行数。
@@ -14,10 +14,14 @@ pub struct App {
     pub files: Vec<FileEntry>,
     pub list_state: ListState,
     pub current_diff: Vec<DiffLine>,
+    /// `current_diff` にハイライトを適用した結果。描画のたびに計算し直すと
+    /// 最大 10,000 行ぶんの syntect 呼び出しが毎フレーム走るため、diff が
+    /// 切り替わったときにだけ更新する。
+    pub highlighted_diff: Vec<HighlightedLine>,
     pub viewport: DiffViewport,
     pub should_quit: bool,
     git_repo: GitRepo,
-    pub highlighter: Highlighter,
+    highlighter: Highlighter,
 }
 
 impl App {
@@ -27,6 +31,7 @@ impl App {
             files,
             list_state: ListState::default(),
             current_diff: Vec::new(),
+            highlighted_diff: Vec::new(),
             viewport: DiffViewport::new(),
             should_quit: false,
             git_repo,
@@ -108,6 +113,10 @@ impl App {
                 .unwrap_or_default(),
             _ => Vec::new(),
         };
+        let path = self.selected_file_path().map(str::to_owned);
+        self.highlighted_diff = self
+            .highlighter
+            .highlight_diff(&self.current_diff, path.as_deref());
         self.viewport.set_content(&self.current_diff);
     }
 

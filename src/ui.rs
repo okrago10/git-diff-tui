@@ -109,25 +109,23 @@ fn draw_diff_preview(frame: &mut Frame, app: &mut App, area: ratatui::layout::Re
         return;
     }
 
-    let highlighted = app
-        .highlighter
-        .highlight_diff(&app.current_diff, app.selected_file_path());
-
-    let lines: Vec<Line> = highlighted
+    let offset = app.viewport.offset();
+    // 文字列は App が保持しているものをそのまま借りる。毎フレーム複製すると
+    // diff が長いほど描画が重くなる。
+    let lines: Vec<Line> = app
+        .highlighted_diff
         .iter()
         .map(|hl| {
             Line::from(
                 hl.spans
                     .iter()
-                    .map(|(style, text)| Span::styled(text.clone(), *style))
+                    .map(|(style, text)| Span::styled(text.as_str(), *style))
                     .collect::<Vec<_>>(),
             )
         })
         .collect();
 
-    let paragraph = Paragraph::new(lines)
-        .block(block)
-        .scroll(app.viewport.offset());
+    let paragraph = Paragraph::new(lines).block(block).scroll(offset);
 
     frame.render_widget(paragraph, area);
 }
