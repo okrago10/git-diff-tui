@@ -20,6 +20,10 @@ use ratatui::Terminal;
 use app::App;
 use git::GitRepo;
 
+/// マウスホイール 1 ノッチで動かす行数と桁数。
+const WHEEL_LINES: u16 = 3;
+const WHEEL_COLUMNS: u16 = 4;
+
 fn main() {
     // Open git repo before terminal init so errors print normally
     let git_repo = match GitRepo::open(None) {
@@ -63,10 +67,10 @@ fn run(git_repo: GitRepo) -> io::Result<()> {
                     app.handle_key(key);
                 }
                 Event::Mouse(mouse) => match mouse.kind {
-                    MouseEventKind::ScrollDown => app.scroll_diff_down(3),
-                    MouseEventKind::ScrollUp => app.scroll_diff_up(3),
-                    MouseEventKind::ScrollRight => app.scroll_diff_right(4),
-                    MouseEventKind::ScrollLeft => app.scroll_diff_left(4),
+                    MouseEventKind::ScrollDown => app.viewport.scroll_down(WHEEL_LINES),
+                    MouseEventKind::ScrollUp => app.viewport.scroll_up(WHEEL_LINES),
+                    MouseEventKind::ScrollRight => app.viewport.scroll_right(WHEEL_COLUMNS),
+                    MouseEventKind::ScrollLeft => app.viewport.scroll_left(WHEEL_COLUMNS),
                     _ => {}
                 },
                 _ => {}

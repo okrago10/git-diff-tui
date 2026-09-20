@@ -91,9 +91,10 @@ fn draw_diff_preview(frame: &mut Frame, app: &mut App, area: ratatui::layout::Re
         .borders(Borders::ALL)
         .title(" Diff ");
 
-    // 実際に diff が見えるのは枠線の内側なので、上下左右 1 セルずつ差し引く。
-    app.viewport.set_height(area.height.saturating_sub(2));
-    app.viewport.set_width(area.width.saturating_sub(2));
+    // 実際に diff が見えるのは枠線の内側。枠の付け方を変えても追随するよう
+    // Block 自身に内側の領域を計算させる。
+    let inner = block.inner(area);
+    app.viewport.set_visible_size(inner.width, inner.height);
 
     if app.current_diff.is_empty() {
         let msg = if app.files.is_empty() {
