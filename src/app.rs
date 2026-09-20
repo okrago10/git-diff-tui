@@ -47,11 +47,7 @@ impl App {
     ///
     /// `what` は何をしようとしていたかの説明。git2 のメッセージ単体では
     /// 「何に失敗したのか」が読み取れないことが多いので前置きに使う。
-    fn ok_or_record_error<T>(
-        &mut self,
-        what: &str,
-        result: Result<T, git2::Error>,
-    ) -> Option<T> {
+    fn ok_or_record_error<T>(&mut self, what: &str, result: Result<T, git2::Error>) -> Option<T> {
         match result {
             Ok(value) => {
                 self.last_error = None;

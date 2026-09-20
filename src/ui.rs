@@ -140,8 +140,9 @@ fn draw_diff_preview(frame: &mut Frame, app: &mut App, area: ratatui::layout::Re
 }
 
 fn draw_status_bar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    if let Some(message) = &app.last_error {
-        let status = Line::from(vec![
+    // 左側は状況によって変わるが、キーの案内は常に出す。
+    let mut spans = match &app.last_error {
+        Some(message) => vec![
             Span::styled(
                 " ERROR ",
                 Style::default()
@@ -150,66 +151,74 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                format!(" {}", sanitize_for_display(message)),
+                format!(" {}", shorten(&sanitize_for_display(message))),
                 Style::default().fg(Color::Red),
             ),
-        ]);
-        frame.render_widget(status_bar(status), area);
-        return;
-    }
+        ],
+        None => {
+            let file_count = app.files.len();
+            let staged = app
+                .files
+                .iter()
+                .filter(|f| f.stage == crate::git::Stage::Staged)
+                .count();
+            let unstaged = file_count - staged;
+            vec![Span::styled(
+                format!(" {file_count} files ({staged} staged, {unstaged} unstaged)"),
+                Style::default().fg(Color::Cyan),
+            )]
+        }
+    };
 
-    let file_count = app.files.len();
-    let staged = app
-        .files
+    spans.push(Span::raw("  │  "));
+    spans.extend(key_hints(if app.last_error.is_some() {
+        &RECOVERY_HINTS
+    } else {
+        &ALL_HINTS
+    }));
+
+    frame.render_widget(status_bar(Line::from(spans)), area);
+}
+
+const ALL_HINTS: [(&str, &str); 5] = [
+    ("j/k", ": select  "),
+    ("J/K", ": scroll  "),
+    ("h/l", ": h-scroll  "),
+    ("r", ": refresh  "),
+    ("q", ": quit"),
+];
+
+/// エラー時はメッセージに場所を譲り、復旧に要るものだけ残す。`r` の案内が
+/// 必要になるのは、まさにエラーが出ている場面であるため消さない。
+const RECOVERY_HINTS: [(&str, &str); 2] = [("r", ": refresh  "), ("q", ": quit")];
+
+fn key_hints(hints: &[(&'static str, &'static str)]) -> Vec<Span<'static>> {
+    hints
         .iter()
-        .filter(|f| f.stage == crate::git::Stage::Staged)
-        .count();
-    let unstaged = file_count - staged;
+        .copied()
+        .flat_map(|(key, label)| {
+            [
+                Span::styled(
+                    key,
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(label, Style::default().fg(Color::DarkGray)),
+            ]
+        })
+        .collect()
+}
 
-    let status = Line::from(vec![
-        Span::styled(
-            format!(" {file_count} files ({staged} staged, {unstaged} unstaged)"),
-            Style::default().fg(Color::Cyan),
-        ),
-        Span::raw("  │  "),
-        Span::styled(
-            "j/k",
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(": select  ", Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            "J/K",
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(": scroll  ", Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            "h/l",
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(": h-scroll  ", Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            "r",
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(": refresh  ", Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            "q",
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(": quit", Style::default().fg(Color::DarkGray)),
-    ]);
-
-    frame.render_widget(status_bar(status), area);
+/// ステータスバーは 1 行しかないので、長いメッセージは切り詰める。
+/// 全文は diff パネル側に出る。
+fn shorten(text: &str) -> String {
+    const MAX_CHARS: usize = 48;
+    let mut shortened: String = text.chars().take(MAX_CHARS).collect();
+    if text.chars().count() > MAX_CHARS {
+        shortened.push('…');
+    }
+    shortened
 }
 
 /// ステータスバー 1 行ぶんの見た目。正常時もエラー時も同じ地色で描く。
@@ -275,6 +284,20 @@ mod tests {
             status.contains("index is corrupt"),
             "ステータスバー: {status}"
         );
+    }
+
+    /// エラー時もキー操作の案内は残す。復旧手段である `r` の案内が最も
+    /// 必要になるのはエラーが出ている場面で、そこで消えると打つ手が
+    /// 分からなくなる。
+    #[test]
+    fn status_bar_keeps_key_hints_on_error() {
+        let mut app = failing_app();
+
+        let lines = rendered_lines(&mut app);
+        let status = lines.last().unwrap();
+
+        assert!(status.contains("refresh"), "ステータスバー: {status}");
+        assert!(status.contains("quit"), "ステータスバー: {status}");
     }
 
     #[test]
