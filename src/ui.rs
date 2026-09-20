@@ -96,6 +96,15 @@ fn draw_diff_preview(frame: &mut Frame, app: &mut App, area: ratatui::layout::Re
     let inner = block.inner(area);
     app.viewport.set_visible_size(inner.width, inner.height);
 
+    // 読み取りに失敗しているなら、その事実を「変更なし」より先に伝える。
+    if let Some(message) = &app.last_error {
+        let paragraph = Paragraph::new(format!("Error: {}", sanitize_for_display(message)))
+            .block(block)
+            .style(Style::default().fg(Color::Red));
+        frame.render_widget(paragraph, area);
+        return;
+    }
+
     if app.highlighted_diff.is_empty() {
         let msg = if app.files.is_empty() {
             "No changes detected"
@@ -131,6 +140,25 @@ fn draw_diff_preview(frame: &mut Frame, app: &mut App, area: ratatui::layout::Re
 }
 
 fn draw_status_bar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    if let Some(message) = &app.last_error {
+        let status = Line::from(vec![
+            Span::styled(
+                " ERROR ",
+                Style::default()
+                    .fg(Color::White)
+                    .bg(Color::Red)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(" {}", sanitize_for_display(message)),
+                Style::default().fg(Color::Red),
+            ),
+        ]);
+        let bar = Paragraph::new(status).style(Style::default().bg(Color::Rgb(30, 30, 30)));
+        frame.render_widget(bar, area);
+        return;
+    }
+
     let file_count = app.files.len();
     let staged = app
         .files
@@ -188,7 +216,63 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 
 #[cfg(test)]
 mod tests {
-    use super::sanitize_for_display;
+    use super::{draw, sanitize_for_display};
+    use crate::app::App;
+    use crate::test_support::{ScriptedSource, error};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    const SCREEN_WIDTH: u16 = 100;
+    const SCREEN_HEIGHT: u16 = 20;
+
+    /// 画面を 1 行ずつ文字列にして返す。
+    fn rendered_lines(app: &mut App) -> Vec<String> {
+        let mut terminal = Terminal::new(TestBackend::new(SCREEN_WIDTH, SCREEN_HEIGHT)).unwrap();
+        terminal.draw(|frame| draw(frame, app)).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .chunks(SCREEN_WIDTH as usize)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect())
+            .collect()
+    }
+
+    /// 画面に描かれた文字をすべて連結する。
+    fn rendered(app: &mut App) -> String {
+        rendered_lines(app).join("")
+    }
+
+    fn failing_app() -> App {
+        App::new(ScriptedSource::new().then_files(Err(error("index is corrupt"))))
+    }
+
+    /// git の読み取りに失敗したとき、画面は「変更なし」ではなく
+    /// 失敗した事実を示す。両者が同じ表示だと、ツールが嘘をつく。
+    #[test]
+    fn shows_error_instead_of_no_changes() {
+        let mut app = failing_app();
+
+        let screen = rendered(&mut app);
+
+        assert!(screen.contains("index is corrupt"), "画面: {screen}");
+        assert!(!screen.contains("No changes detected"), "画面: {screen}");
+    }
+
+    /// ステータスバーにも失敗を出す。diff パネルから目を離していても
+    /// 「いま表示しているものが古い / 空である」理由が分かる。
+    #[test]
+    fn status_bar_shows_error() {
+        let mut app = failing_app();
+
+        let lines = rendered_lines(&mut app);
+        let status = lines.last().unwrap();
+
+        assert!(
+            status.contains("index is corrupt"),
+            "ステータスバー: {status}"
+        );
+    }
 
     #[test]
     fn keeps_normal_paths_unchanged() {
