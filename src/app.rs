@@ -1,8 +1,8 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::widgets::ListState;
 
-use crate::git::{DiffLine, FileEntry, GitRepo};
-use crate::highlight::Highlighter;
+use crate::git::{FileEntry, GitRepo};
+use crate::highlight::{HighlightedLine, Highlighter};
 use crate::viewport::DiffViewport;
 
 /// `J` / `K` / `Ctrl+d` / `Ctrl+u` で動かす行数。
@@ -13,11 +13,14 @@ const STEP_COLUMNS: u16 = 4;
 pub struct App {
     pub files: Vec<FileEntry>,
     pub list_state: ListState,
-    pub current_diff: Vec<DiffLine>,
+    /// 表示中の diff にハイライトを適用した結果。描画のたびに計算し直すと
+    /// 最大 10,000 行ぶんの syntect 呼び出しが毎フレーム走るため、diff が
+    /// 切り替わったときにだけ更新する。
+    pub highlighted_diff: Vec<HighlightedLine>,
     pub viewport: DiffViewport,
     pub should_quit: bool,
     git_repo: GitRepo,
-    pub highlighter: Highlighter,
+    highlighter: Highlighter,
 }
 
 impl App {
@@ -26,7 +29,7 @@ impl App {
         let mut app = Self {
             files,
             list_state: ListState::default(),
-            current_diff: Vec::new(),
+            highlighted_diff: Vec::new(),
             viewport: DiffViewport::new(),
             should_quit: false,
             git_repo,
@@ -100,15 +103,17 @@ impl App {
     }
 
     fn update_diff(&mut self) {
-        let selected = self.list_state.selected();
-        self.current_diff = match selected {
-            Some(i) if i < self.files.len() => self
-                .git_repo
-                .file_diff(&self.files[i])
-                .unwrap_or_default(),
+        let diff = match self.list_state.selected() {
+            Some(i) if i < self.files.len() => {
+                self.git_repo.file_diff(&self.files[i]).unwrap_or_default()
+            }
             _ => Vec::new(),
         };
-        self.viewport.set_content(&self.current_diff);
+        let highlighted = self
+            .highlighter
+            .highlight_diff(&diff, self.selected_file_path());
+        self.highlighted_diff = highlighted;
+        self.viewport.set_content(&self.highlighted_diff);
     }
 
     fn refresh(&mut self) {
@@ -123,8 +128,8 @@ impl App {
                 .min(self.files.len() - 1);
             self.list_state.select(Some(idx));
         }
-        // 一覧が空になった場合も update_diff を通す。current_diff と
-        // viewport の内容を別経路で更新すると、両者がずれる。
+        // 一覧が空になった場合も update_diff を通す。表示内容と viewport を
+        // 別経路で更新すると、両者がずれる。
         self.update_diff();
         self.viewport.reset();
     }

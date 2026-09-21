@@ -1,6 +1,5 @@
 use git2::{Delta, Diff, DiffOptions, Repository};
 use std::path::Path;
-use unicode_width::UnicodeWidthStr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChangeKind {
@@ -64,15 +63,6 @@ pub struct DiffLine {
     pub content: String,
 }
 
-impl DiffLine {
-    /// この行が端末で占める幅（セル数）。
-    ///
-    /// 全角文字は 2 セルを占めるため、文字数とは一致しない。行末の改行は
-    /// 表示されないので幅に含めない。横スクロールの上限を決めるのに使う。
-    pub fn display_width(&self) -> usize {
-        UnicodeWidthStr::width(self.content.trim_end_matches(['\n', '\r']))
-    }
-}
 
 pub struct GitRepo {
     repo: Repository,
@@ -262,31 +252,5 @@ fn delta_to_change_kind(status: Delta) -> Option<ChangeKind> {
         Delta::Typechange => Some(ChangeKind::Typechange),
         Delta::Untracked => Some(ChangeKind::Untracked),
         _ => None,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{DiffLine, DiffLineKind};
-
-    /// 表示幅は文字数ではなくセル数で数える。全角 3 文字は 6 セルを占める。
-    #[test]
-    fn display_width_counts_cells_not_chars() {
-        assert_eq!(line("abc\n").display_width(), 3);
-        assert_eq!(line("あいう\n").display_width(), 6);
-    }
-
-    /// 行末の改行は表示されないので幅に含めない。
-    #[test]
-    fn display_width_excludes_trailing_newline() {
-        assert_eq!(line("abc\n").display_width(), line("abc").display_width());
-        assert_eq!(line("abc\r\n").display_width(), 3);
-    }
-
-    fn line(content: &str) -> DiffLine {
-        DiffLine {
-            kind: DiffLineKind::Context,
-            content: content.to_string(),
-        }
     }
 }
