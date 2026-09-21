@@ -4,6 +4,9 @@ mod highlight;
 mod ui;
 mod viewport;
 
+#[cfg(test)]
+mod test_support;
+
 use std::io;
 use std::panic;
 use std::time::Duration;

@@ -64,6 +64,19 @@ pub struct DiffLine {
 }
 
 
+/// 作業ツリーの差分を読み出す口。
+///
+/// 失敗の理由を呼び出し側に返すのがこの境界の役目で、`Result` を捨てると
+/// 「変更が無い」と見分けがつかなくなる。テストでは実リポジトリの代わりに
+/// 任意の結果を返す実装を差し込む。
+pub trait DiffSource {
+    /// staged / unstaged / untracked の変更ファイル一覧。
+    fn changed_files(&self) -> Result<Vec<FileEntry>, git2::Error>;
+
+    /// 1 ファイルぶんの差分を行単位で取得する。
+    fn file_diff(&self, entry: &FileEntry) -> Result<Vec<DiffLine>, git2::Error>;
+}
+
 pub struct GitRepo {
     repo: Repository,
 }
@@ -79,7 +92,57 @@ impl GitRepo {
         Ok(Self { repo })
     }
 
-    pub fn changed_files(&self) -> Result<Vec<FileEntry>, git2::Error> {
+    fn diff_for_entry(&self, entry: &FileEntry) -> Result<Diff<'_>, git2::Error> {
+        let mut opts = DiffOptions::new();
+        opts.pathspec(&entry.path);
+        opts.include_untracked(true);
+        opts.recurse_untracked_dirs(true);
+
+        match entry.stage {
+            Stage::Staged => {
+                let head_tree = self.repo.head().and_then(|r| r.peel_to_tree()).ok();
+                self.repo
+                    .diff_tree_to_index(head_tree.as_ref(), None, Some(&mut opts))
+            }
+            Stage::Unstaged => self.repo.diff_index_to_workdir(None, Some(&mut opts)),
+        }
+    }
+
+    fn untracked_file_lines(&self, entry: &FileEntry) -> Vec<DiffLine> {
+        let workdir = match self.repo.workdir() {
+            Some(d) => d,
+            None => return vec![],
+        };
+
+        let full_path = workdir.join(&entry.path);
+        let content = match std::fs::read_to_string(&full_path) {
+            Ok(c) => c,
+            Err(_) => {
+                return vec![DiffLine {
+                    kind: DiffLineKind::Context,
+                    content: "Binary file or unreadable".to_string(),
+                }];
+            }
+        };
+
+        let mut lines = vec![DiffLine {
+            kind: DiffLineKind::FileHeader,
+            content: format!("new file: {}\n", entry.path),
+        }];
+
+        for line in content.lines().take(MAX_DIFF_LINES) {
+            lines.push(DiffLine {
+                kind: DiffLineKind::Addition,
+                content: format!("{line}\n"),
+            });
+        }
+
+        lines
+    }
+}
+
+impl DiffSource for GitRepo {
+    fn changed_files(&self) -> Result<Vec<FileEntry>, git2::Error> {
         let mut entries = Vec::new();
 
         // staged changes: HEAD tree vs index
@@ -147,7 +210,7 @@ impl GitRepo {
         Ok(entries)
     }
 
-    pub fn file_diff(&self, entry: &FileEntry) -> Result<Vec<DiffLine>, git2::Error> {
+    fn file_diff(&self, entry: &FileEntry) -> Result<Vec<DiffLine>, git2::Error> {
         let diff = self.diff_for_entry(entry)?;
         let mut lines = Vec::new();
 
@@ -181,54 +244,6 @@ impl GitRepo {
         }
 
         Ok(lines)
-    }
-
-    fn diff_for_entry(&self, entry: &FileEntry) -> Result<Diff<'_>, git2::Error> {
-        let mut opts = DiffOptions::new();
-        opts.pathspec(&entry.path);
-        opts.include_untracked(true);
-        opts.recurse_untracked_dirs(true);
-
-        match entry.stage {
-            Stage::Staged => {
-                let head_tree = self.repo.head().and_then(|r| r.peel_to_tree()).ok();
-                self.repo
-                    .diff_tree_to_index(head_tree.as_ref(), None, Some(&mut opts))
-            }
-            Stage::Unstaged => self.repo.diff_index_to_workdir(None, Some(&mut opts)),
-        }
-    }
-
-    fn untracked_file_lines(&self, entry: &FileEntry) -> Vec<DiffLine> {
-        let workdir = match self.repo.workdir() {
-            Some(d) => d,
-            None => return vec![],
-        };
-
-        let full_path = workdir.join(&entry.path);
-        let content = match std::fs::read_to_string(&full_path) {
-            Ok(c) => c,
-            Err(_) => {
-                return vec![DiffLine {
-                    kind: DiffLineKind::Context,
-                    content: "Binary file or unreadable".to_string(),
-                }];
-            }
-        };
-
-        let mut lines = vec![DiffLine {
-            kind: DiffLineKind::FileHeader,
-            content: format!("new file: {}\n", entry.path),
-        }];
-
-        for line in content.lines().take(MAX_DIFF_LINES) {
-            lines.push(DiffLine {
-                kind: DiffLineKind::Addition,
-                content: format!("{line}\n"),
-            });
-        }
-
-        lines
     }
 }
 
