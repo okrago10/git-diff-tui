@@ -91,6 +91,11 @@ fn draw_diff_preview(frame: &mut Frame, app: &mut App, area: ratatui::layout::Re
         .borders(Borders::ALL)
         .title(" Diff ");
 
+    // 実際に diff が見えるのは枠線の内側。枠の付け方を変えても追随するよう
+    // Block 自身に内側の領域を計算させる。
+    let inner = block.inner(area);
+    app.viewport.set_visible_size(inner.width, inner.height);
+
     if app.current_diff.is_empty() {
         let msg = if app.files.is_empty() {
             "No changes detected"
@@ -122,7 +127,7 @@ fn draw_diff_preview(frame: &mut Frame, app: &mut App, area: ratatui::layout::Re
 
     let paragraph = Paragraph::new(lines)
         .block(block)
-        .scroll((app.diff_scroll, app.diff_hscroll));
+        .scroll(app.viewport.offset());
 
     frame.render_widget(paragraph, area);
 }

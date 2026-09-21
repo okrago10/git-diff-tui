@@ -485,6 +485,7 @@ dependencies = [
  "git2",
  "ratatui",
  "syntect",
+ "unicode-width",
 ]
 
 [[package]]
