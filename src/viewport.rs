@@ -1,4 +1,4 @@
-use crate::git::DiffLine;
+use crate::highlight::HighlightedLine;
 
 /// 1 軸ぶんのスクロール状態。
 ///
@@ -65,11 +65,19 @@ impl DiffViewport {
         Self::default()
     }
 
-    /// 表示中の diff を設定する。総行数と最長行の幅がスクロールの上限になる。
-    pub fn set_content(&mut self, lines: &[DiffLine]) {
+    /// 表示する行を設定する。総行数と最長行の幅がスクロールの上限になる。
+    ///
+    /// 幅は行頭マーカーを含む描画後の行から測る。マーカーは `DiffLine` には
+    /// 含まれないため、元の diff 行から測ると上限が 1 桁足りなくなる。
+    pub fn set_content(&mut self, lines: &[HighlightedLine]) {
         self.vertical.set_content(lines.len());
-        self.horizontal
-            .set_content(lines.iter().map(DiffLine::display_width).max().unwrap_or(0));
+        self.horizontal.set_content(
+            lines
+                .iter()
+                .map(HighlightedLine::display_width)
+                .max()
+                .unwrap_or(0),
+        );
     }
 
     /// 枠線を除いた、実際に diff が見えている範囲の大きさ。
@@ -124,7 +132,7 @@ impl DiffViewport {
 #[cfg(test)]
 mod tests {
     use super::DiffViewport;
-    use crate::git::{DiffLine, DiffLineKind};
+    use crate::highlight::HighlightedLine;
 
     /// 内容が画面に収まっているときはスクロールしない。
     /// 収まっているのに動かせると、diff 全体が画面外に消える。
@@ -235,12 +243,14 @@ mod tests {
         viewport
     }
 
-    /// 指定した行数・桁数の diff を作る。
-    fn diff_of(line_count: usize, width: usize) -> Vec<DiffLine> {
+    /// 指定した行数・桁数の表示内容を作る。
+    fn diff_of(line_count: usize, width: usize) -> Vec<HighlightedLine> {
         (0..line_count)
-            .map(|_| DiffLine {
-                kind: DiffLineKind::Context,
-                content: format!("{}\n", "x".repeat(width)),
+            .map(|_| HighlightedLine {
+                spans: vec![(
+                    ratatui::style::Style::default(),
+                    format!("{}\n", "x".repeat(width)),
+                )],
             })
             .collect()
     }

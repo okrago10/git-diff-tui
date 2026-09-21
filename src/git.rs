@@ -1,6 +1,5 @@
 use git2::{Delta, Diff, DiffOptions, Repository};
 use std::path::Path;
-use unicode_width::UnicodeWidthStr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChangeKind {
@@ -64,14 +63,18 @@ pub struct DiffLine {
     pub content: String,
 }
 
-impl DiffLine {
-    /// この行が端末で占める幅（セル数）。
-    ///
-    /// 全角文字は 2 セルを占めるため、文字数とは一致しない。行末の改行は
-    /// 表示されないので幅に含めない。横スクロールの上限を決めるのに使う。
-    pub fn display_width(&self) -> usize {
-        UnicodeWidthStr::width(self.content.trim_end_matches(['\n', '\r']))
-    }
+
+/// 作業ツリーの差分を読み出す口。
+///
+/// 失敗の理由を呼び出し側に返すのがこの境界の役目で、`Result` を捨てると
+/// 「変更が無い」と見分けがつかなくなる。テストでは実リポジトリの代わりに
+/// 任意の結果を返す実装を差し込む。
+pub trait DiffSource {
+    /// staged / unstaged / untracked の変更ファイル一覧。
+    fn changed_files(&self) -> Result<Vec<FileEntry>, git2::Error>;
+
+    /// 1 ファイルぶんの差分を行単位で取得する。
+    fn file_diff(&self, entry: &FileEntry) -> Result<Vec<DiffLine>, git2::Error>;
 }
 
 pub struct GitRepo {
@@ -89,7 +92,57 @@ impl GitRepo {
         Ok(Self { repo })
     }
 
-    pub fn changed_files(&self) -> Result<Vec<FileEntry>, git2::Error> {
+    fn diff_for_entry(&self, entry: &FileEntry) -> Result<Diff<'_>, git2::Error> {
+        let mut opts = DiffOptions::new();
+        opts.pathspec(&entry.path);
+        opts.include_untracked(true);
+        opts.recurse_untracked_dirs(true);
+
+        match entry.stage {
+            Stage::Staged => {
+                let head_tree = self.repo.head().and_then(|r| r.peel_to_tree()).ok();
+                self.repo
+                    .diff_tree_to_index(head_tree.as_ref(), None, Some(&mut opts))
+            }
+            Stage::Unstaged => self.repo.diff_index_to_workdir(None, Some(&mut opts)),
+        }
+    }
+
+    fn untracked_file_lines(&self, entry: &FileEntry) -> Vec<DiffLine> {
+        let workdir = match self.repo.workdir() {
+            Some(d) => d,
+            None => return vec![],
+        };
+
+        let full_path = workdir.join(&entry.path);
+        let content = match std::fs::read_to_string(&full_path) {
+            Ok(c) => c,
+            Err(_) => {
+                return vec![DiffLine {
+                    kind: DiffLineKind::Context,
+                    content: "Binary file or unreadable".to_string(),
+                }];
+            }
+        };
+
+        let mut lines = vec![DiffLine {
+            kind: DiffLineKind::FileHeader,
+            content: format!("new file: {}\n", entry.path),
+        }];
+
+        for line in content.lines().take(MAX_DIFF_LINES) {
+            lines.push(DiffLine {
+                kind: DiffLineKind::Addition,
+                content: format!("{line}\n"),
+            });
+        }
+
+        lines
+    }
+}
+
+impl DiffSource for GitRepo {
+    fn changed_files(&self) -> Result<Vec<FileEntry>, git2::Error> {
         let mut entries = Vec::new();
 
         // staged changes: HEAD tree vs index
@@ -157,7 +210,7 @@ impl GitRepo {
         Ok(entries)
     }
 
-    pub fn file_diff(&self, entry: &FileEntry) -> Result<Vec<DiffLine>, git2::Error> {
+    fn file_diff(&self, entry: &FileEntry) -> Result<Vec<DiffLine>, git2::Error> {
         let diff = self.diff_for_entry(entry)?;
         let mut lines = Vec::new();
 
@@ -192,54 +245,6 @@ impl GitRepo {
 
         Ok(lines)
     }
-
-    fn diff_for_entry(&self, entry: &FileEntry) -> Result<Diff<'_>, git2::Error> {
-        let mut opts = DiffOptions::new();
-        opts.pathspec(&entry.path);
-        opts.include_untracked(true);
-        opts.recurse_untracked_dirs(true);
-
-        match entry.stage {
-            Stage::Staged => {
-                let head_tree = self.repo.head().and_then(|r| r.peel_to_tree()).ok();
-                self.repo
-                    .diff_tree_to_index(head_tree.as_ref(), None, Some(&mut opts))
-            }
-            Stage::Unstaged => self.repo.diff_index_to_workdir(None, Some(&mut opts)),
-        }
-    }
-
-    fn untracked_file_lines(&self, entry: &FileEntry) -> Vec<DiffLine> {
-        let workdir = match self.repo.workdir() {
-            Some(d) => d,
-            None => return vec![],
-        };
-
-        let full_path = workdir.join(&entry.path);
-        let content = match std::fs::read_to_string(&full_path) {
-            Ok(c) => c,
-            Err(_) => {
-                return vec![DiffLine {
-                    kind: DiffLineKind::Context,
-                    content: "Binary file or unreadable".to_string(),
-                }];
-            }
-        };
-
-        let mut lines = vec![DiffLine {
-            kind: DiffLineKind::FileHeader,
-            content: format!("new file: {}\n", entry.path),
-        }];
-
-        for line in content.lines().take(MAX_DIFF_LINES) {
-            lines.push(DiffLine {
-                kind: DiffLineKind::Addition,
-                content: format!("{line}\n"),
-            });
-        }
-
-        lines
-    }
 }
 
 impl Stage {
@@ -262,31 +267,5 @@ fn delta_to_change_kind(status: Delta) -> Option<ChangeKind> {
         Delta::Typechange => Some(ChangeKind::Typechange),
         Delta::Untracked => Some(ChangeKind::Untracked),
         _ => None,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{DiffLine, DiffLineKind};
-
-    /// 表示幅は文字数ではなくセル数で数える。全角 3 文字は 6 セルを占める。
-    #[test]
-    fn display_width_counts_cells_not_chars() {
-        assert_eq!(line("abc\n").display_width(), 3);
-        assert_eq!(line("あいう\n").display_width(), 6);
-    }
-
-    /// 行末の改行は表示されないので幅に含めない。
-    #[test]
-    fn display_width_excludes_trailing_newline() {
-        assert_eq!(line("abc\n").display_width(), line("abc").display_width());
-        assert_eq!(line("abc\r\n").display_width(), 3);
-    }
-
-    fn line(content: &str) -> DiffLine {
-        DiffLine {
-            kind: DiffLineKind::Context,
-            content: content.to_string(),
-        }
     }
 }
