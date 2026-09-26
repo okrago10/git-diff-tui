@@ -8,7 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 BIN="$PROJECT_ROOT/target/${GDF_VERIFY_PROFILE:-release}/gdf"
 SOCK="gdf-verify"                          # private tmux socket (tmux -L)
-SCRATCH_ROOT="${GDF_VERIFY_SCRATCH:-${TMPDIR:-/tmp}/gdf-verify}"
+SCRATCH_ROOT="${GDF_VERIFY_SCRATCH:-/tmp/gdf-verify}"  # fixed path: recipes refer to it literally
 EVIDENCE_ROOT="${GDF_VERIFY_EVIDENCE:-$PROJECT_ROOT/.verify-artifacts}"
 COLS="${GDF_VERIFY_COLS:-120}"
 ROWS="${GDF_VERIFY_ROWS:-30}"
@@ -42,9 +42,10 @@ EOF
 }
 
 cmd_build() {
-  local flag=()
-  [[ "${GDF_VERIFY_PROFILE:-release}" == "release" ]] && flag=(--release)
-  (cd "$PROJECT_ROOT" && cargo build --quiet "${flag[@]}")
+  local profile=()
+  [[ "${GDF_VERIFY_PROFILE:-release}" == "release" ]] && profile=(--release)
+  # ${a[@]+...}: an empty array is "unbound" under set -u on bash < 4.4 (macOS).
+  (cd "$PROJECT_ROOT" && cargo build --quiet ${profile[@]+"${profile[@]}"})
   [[ -x "$BIN" ]] || die "build did not produce $BIN"
   echo "$BIN"
 }
@@ -88,7 +89,7 @@ cmd_start() {
   [[ -d "$repo" ]] || die "no such dir: $repo"
   t has-session -t "$(tgt "$s")" 2>/dev/null && die "session $s already exists (stop it or pick another name)"
   t new-session -d -s "$s" -x "$COLS" -y "$ROWS" -c "$repo" \
-    "env TERM=xterm-256color $BIN; echo \"[gdf exited: \$?]\"; sleep 86400"
+    "env TERM=xterm-256color $(printf %q "$BIN"); echo \"[gdf exited: \$?]\"; sleep 86400"
   t set-option -t "$(tgt "$s")" remain-on-exit on >/dev/null
   mkdir -p "$EVIDENCE_ROOT/$s"
   echo "started $s in $repo"
@@ -151,7 +152,7 @@ cmd_alive() {
   local s="${1:?session}"
   local pid
   pid="$(t display-message -p -t "$(tgt "$s")" '#{pane_pid}' 2>/dev/null)" || return 1
-  pgrep -P "$pid" -f "^$BIN" >/dev/null
+  pgrep -P "$pid" -x gdf >/dev/null
 }
 
 cmd_doctor() {
