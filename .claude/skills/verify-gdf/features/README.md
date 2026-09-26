@@ -12,7 +12,7 @@ This directory is the maintained source for verifying the user-facing behavior o
 
 ## Driving conventions
 
-- Send input only with `$H keys` (tmux key names) or `tmux -L gdf-verify send-keys -l` for raw mouse sequences, then `$H settle`.
+- Send input only with `$H keys` (tmux key names) or `$H wheel` (mouse wheel). Both settle the screen afterwards.
 - Assert with `$H wait <session> "<text>"` or `$H screen <session> | grep`. Selection = the Files row starting with `▶ `.
 - Pane is 120x30 unless a recipe says otherwise; the Diff pane shows 27 lines of diff and ~82 columns.
 - Match substrings of the diff header (e.g. `b/long.rs`), not the whole first Diff line (see Gotchas in `../SKILL.md`).

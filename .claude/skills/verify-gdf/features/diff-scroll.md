@@ -28,12 +28,12 @@ Preconditions:
 - **End (G).** Run `$H keys scr G` and `$H capture scr 05-G`. Last Diff row is the `+let wide = "WWW...` line; top Diff line is `+let v35 = 350;`.
 - **Top (g).** Run `$H keys scr g`. Screen equals `01-top`.
 - **Horizontal.** Run `$H keys scr l l` and `$H capture scr 06-l-l`. Diff row 1 begins `it a/long.rs` (header shifted left by the h-scroll step ×2). `$H keys scr h` shifts back one step; `$H keys scr 0` restores `01-top`. `Right` / `Left` behave as `l` / `h`.
-- **Wheel.** From `g`, run `tmux -L gdf-verify send-keys -t scr -l $'\e[<65;60;10M'` then `$H settle scr` and `$H capture scr 07-wheel-down`. Top Diff line is `-let v2 = 2;` (3 lines). `$'\e[<67;60;10M'` shifts 4 columns right (`-let v2` becomes ` v2 = 2;`). `64` / `66` reverse them.
+- **Wheel.** From `g`, run `$H wheel scr down` and `$H capture scr 07-wheel-down`. Top Diff line is `-let v2 = 2;` (3 lines). `$H wheel scr right` shifts 4 columns (`-let v2` becomes ` v2 = 2;`). `up` / `left` reverse them.
 - **Reset on selection.** After scrolling, `$H keys scr k` then `$H keys scr j`. `long.rs` shows `01-top` again.
 
 ## Gotchas
 
 - Scroll only has an effect on `long.rs` in the fixture; other diffs fit in the pane, so a "no change" there is not a failure.
-- Mouse coordinates must be inside the Diff pane (x > 36 at 120 cols). Wheel events over the Files pane still scroll the diff; record which you used.
+- `wheel` sends events at column 60, row 10 (inside the Diff pane at 120x30). Wheel events over the Files pane also scroll the diff (observed).
 - With `GDF_VERIFY_PROFILE=debug`, selecting `long.rs` takes ~0.9s to redraw; always `wait "b/long.rs"` before scrolling.
 - Changing `GDF_VERIFY_ROWS` changes how many lines `G` leaves visible; the expected top line for `G` above assumes 30 rows.

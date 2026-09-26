@@ -7,7 +7,7 @@ description: Launch and drive the real gdf (git-diff-tui) terminal UI in a priva
 
 `gdf` is a read-only ratatui TUI: left pane `Files` (changed files), right pane `Diff` (highlighted diff of the selected file), bottom status bar. It reads the git repo found by walking up from its **cwd**; there are no CLI flags or env vars. It never writes to the repo.
 
-Everything goes through `gdf-verify.sh` (next to this file). It uses a private tmux socket (`tmux -L gdf-verify`), so it cannot touch the user's tmux sessions, and it runs gdf only inside disposable fixture repos under `/tmp/gdf-verify/`.
+Everything goes through `gdf-verify.sh` (next to this file). It uses a private tmux socket (`tmux -L gdf-verify`) without loading `~/.tmux.conf`, and targets sessions by exact name (a bare `-t s` would prefix-match `s1`), so it cannot touch the user's tmux sessions, and it runs gdf only inside disposable fixture repos under `/tmp/gdf-verify/`.
 
 ```bash
 H=.claude/skills/verify-gdf/gdf-verify.sh   # run from repo root
@@ -65,15 +65,7 @@ $H screen s1              # plain-text screen to stdout
 
 - Assert with `wait <text>` / `grep` on `screen`, not on timing. `keys` settles (screen unchanged 600ms) but that is a heuristic.
 - Stable handles: pane titles ` Files ` / ` Diff `; selection marker `▶ ` at the start of a Files row; stage icons `●` (staged) `○` (unstaged); kind letters `M A D R C T ?`; status bar ` N files (S staged, U unstaged)`; hints `j/k: select  J/K: scroll  h/l: h-scroll  r: refresh  q: quit`; empty state `No changes detected`; error state `Error: ...` in Diff pane and ` ERROR ` in the status bar.
-- Mouse wheel (gdf enables SGR mouse capture): send raw escape sequences with `-l`, coordinates must be inside the Diff pane (column > 36 at 120 cols):
-
-  ```bash
-  tmux -L gdf-verify send-keys -t s1 -l $'\e[<65;60;10M'   # wheel down (3 lines)
-  tmux -L gdf-verify send-keys -t s1 -l $'\e[<64;60;10M'   # wheel up
-  tmux -L gdf-verify send-keys -t s1 -l $'\e[<67;60;10M'   # wheel right (4 cols)
-  tmux -L gdf-verify send-keys -t s1 -l $'\e[<66;60;10M'   # wheel left
-  $H settle s1
-  ```
+- Mouse wheel (gdf enables SGR mouse capture): `$H wheel s1 down|up|left|right` sends one notch (3 lines / 4 columns) as a raw SGR sequence at column 60, row 10 of the Diff pane, then settles.
 
 - To change repo state mid-run (e.g. for refresh), edit files inside `$R` with normal shell commands, then press `r`.
 - Isolation: each drive gets its own session name and ideally its own fixture name; any number can run side by side. Never `start` in the user's checkout or `$PROJECT_ROOT`: gdf is read-only, but its screen would reflect the user's uncommitted work and the proof would not be reproducible.

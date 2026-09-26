@@ -13,7 +13,10 @@ EVIDENCE_ROOT="${GDF_VERIFY_EVIDENCE:-$PROJECT_ROOT/.verify-artifacts}"
 COLS="${GDF_VERIFY_COLS:-120}"
 ROWS="${GDF_VERIFY_ROWS:-30}"
 
-t() { tmux -L "$SOCK" "$@"; }
+# -f /dev/null: ignore the user's ~/.tmux.conf (default-shell etc.).
+t() { tmux -f /dev/null -L "$SOCK" "$@"; }
+# Exact-match target. A bare "-t s" prefix-matches, so it would hit "s1".
+tgt() { printf '=%s:' "$1"; }
 die() { echo "gdf-verify: $*" >&2; exit 1; }
 
 usage() {
@@ -26,6 +29,7 @@ usage: gdf-verify.sh <command> [args]
   wait <session> <text> [sec]   block until <text> appears on screen (default 10s)
   keys <session> <key>...       send tmux key names one by one (j, k, J, G, C-d, PageDown, Escape, ...), settling after each
   settle <session>              wait until the screen stops changing
+  wheel <session> <dir>         mouse wheel up|down (3 lines) or left|right (4 cols) over the Diff pane
   screen <session>              print current screen (plain text)
   capture <session> <label>     save screen to evidence dir as <label>.txt and <label>.ansi
   alive <session>               exit 0 if gdf is still running in the pane
@@ -82,15 +86,15 @@ cmd_start() {
   local s="${1:?session}" repo="${2:?repo dir}"
   [[ -x "$BIN" ]] || die "binary missing; run: $0 build"
   [[ -d "$repo" ]] || die "no such dir: $repo"
-  t has-session -t "$s" 2>/dev/null && die "session $s already exists (stop it or pick another name)"
+  t has-session -t "$(tgt "$s")" 2>/dev/null && die "session $s already exists (stop it or pick another name)"
   t new-session -d -s "$s" -x "$COLS" -y "$ROWS" -c "$repo" \
     "env TERM=xterm-256color $BIN; echo \"[gdf exited: \$?]\"; sleep 86400"
-  t set-option -t "$s" remain-on-exit on >/dev/null
+  t set-option -t "$(tgt "$s")" remain-on-exit on >/dev/null
   mkdir -p "$EVIDENCE_ROOT/$s"
   echo "started $s in $repo"
 }
 
-cmd_screen() { t capture-pane -p -t "${1:?session}"; }
+cmd_screen() { t capture-pane -p -t "$(tgt "${1:?session}")"; }
 
 cmd_wait() {
   local s="${1:?session}" text="${2:?text}" secs="${3:-10}" i
@@ -105,7 +109,17 @@ cmd_wait() {
 cmd_keys() {
   local s="${1:?session}"; shift
   local k
-  for k in "$@"; do t send-keys -t "$s" "$k"; cmd_settle "$s"; done
+  for k in "$@"; do t send-keys -t "$(tgt "$s")" "$k"; cmd_settle "$s"; done
+}
+
+# Mouse wheel via raw SGR sequences (gdf enables mouse capture). Column 60,
+# row 10 is inside the Diff pane at the default 120x30 size.
+cmd_wheel() {
+  local s="${1:?session}" dir="${2:?up|down|left|right}" b
+  case "$dir" in up) b=64 ;; down) b=65 ;; left) b=66 ;; right) b=67 ;;
+    *) die "wheel direction must be up|down|left|right" ;; esac
+  t send-keys -t "$(tgt "$s")" -l $'\e'"[<$b;60;10M"
+  cmd_settle "$s"
 }
 
 # Wait until the screen is unchanged for 600ms (max ~8s). gdf redraws on a
@@ -128,15 +142,15 @@ cmd_capture() {
   local s="${1:?session}" label="${2:?label}" out="$EVIDENCE_ROOT/${1}"
   mkdir -p "$out"
   cmd_settle "$s"
-  t capture-pane -p -t "$s" > "$out/$label.txt"
-  t capture-pane -p -e -t "$s" > "$out/$label.ansi"
+  t capture-pane -p -t "$(tgt "$s")" > "$out/$label.txt"
+  t capture-pane -p -e -t "$(tgt "$s")" > "$out/$label.ansi"
   echo "$out/$label.txt"
 }
 
 cmd_alive() {
   local s="${1:?session}"
   local pid
-  pid="$(t display-message -p -t "$s" '#{pane_pid}' 2>/dev/null)" || return 1
+  pid="$(t display-message -p -t "$(tgt "$s")" '#{pane_pid}' 2>/dev/null)" || return 1
   pgrep -P "$pid" -f "^$BIN" >/dev/null
 }
 
@@ -150,8 +164,8 @@ cmd_doctor() {
       || { echo "FAIL binary older than $newest (run build)"; ok=0; }
   else echo "FAIL binary missing: $BIN (run build)"; ok=0; fi
   if [[ -n "$s" ]]; then
-    if t has-session -t "$s" 2>/dev/null; then
-      echo "ok   session $s on private socket -L $SOCK (cwd $(t display-message -p -t "$s" '#{pane_current_path}'))"
+    if t has-session -t "$(tgt "$s")" 2>/dev/null; then
+      echo "ok   session $s on private socket -L $SOCK (cwd $(t display-message -p -t "$(tgt "$s")" '#{pane_current_path}'))"
       cmd_alive "$s" && echo "ok   gdf running in pane" || { echo "FAIL gdf not running in pane (last line: $(cmd_screen "$s" | grep -v '^$' | tail -1))"; ok=0; }
     else echo "FAIL no session $s on -L $SOCK"; ok=0; fi
   fi
@@ -161,9 +175,9 @@ cmd_doctor() {
 
 cmd_stop() {
   local s="${1:?session}"
-  t has-session -t "$s" 2>/dev/null || { echo "no session $s"; return 0; }
-  cmd_alive "$s" && t send-keys -t "$s" q && sleep 0.3
-  t kill-session -t "$s"
+  t has-session -t "$(tgt "$s")" 2>/dev/null || { echo "no session $s"; return 0; }
+  cmd_alive "$s" && t send-keys -t "$(tgt "$s")" q && sleep 0.3
+  t kill-session -t "$(tgt "$s")"
   echo "stopped $s"
 }
 
@@ -174,7 +188,7 @@ cmd_cleanup() {
 }
 
 case "${1:-}" in
-  build|fixture|start|wait|settle|keys|screen|capture|alive|doctor|stop|cleanup)
+  build|fixture|start|wait|settle|wheel|keys|screen|capture|alive|doctor|stop|cleanup)
     c="$1"; shift; "cmd_$c" "$@" ;;
   *) usage; exit 2 ;;
 esac
