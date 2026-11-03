@@ -12,7 +12,7 @@ use std::io;
 use std::panic;
 use std::time::Duration;
 
-use crossterm::event::{self, Event, KeyEventKind, MouseEventKind};
+use crossterm::event;
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -23,10 +23,6 @@ use ratatui::Terminal;
 
 use app::App;
 use git::GitRepo;
-
-/// マウスホイール 1 ノッチで動かす行数と桁数。
-const WHEEL_LINES: u16 = 3;
-const WHEEL_COLUMNS: u16 = 4;
 
 fn main() {
     // Open git repo before terminal init so errors print normally
@@ -66,19 +62,7 @@ fn run(git_repo: GitRepo) -> io::Result<()> {
         terminal.draw(|frame| ui::draw(frame, &mut app))?;
 
         if event::poll(Duration::from_millis(100))? {
-            match event::read()? {
-                Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    app.handle_key(key);
-                }
-                Event::Mouse(mouse) => match mouse.kind {
-                    MouseEventKind::ScrollDown => app.viewport.scroll_down(WHEEL_LINES),
-                    MouseEventKind::ScrollUp => app.viewport.scroll_up(WHEEL_LINES),
-                    MouseEventKind::ScrollRight => app.viewport.scroll_right(WHEEL_COLUMNS),
-                    MouseEventKind::ScrollLeft => app.viewport.scroll_left(WHEEL_COLUMNS),
-                    _ => {}
-                },
-                _ => {}
-            }
+            app.handle_event(event::read()?);
         }
 
         if app.should_quit {

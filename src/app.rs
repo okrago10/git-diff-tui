@@ -1,4 +1,4 @@
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEventKind};
 
 use crate::file_list::FileList;
 use crate::git::DiffSource;
@@ -9,6 +9,9 @@ use crate::viewport::DiffViewport;
 const PAGE_LINES: u16 = 10;
 /// `h` / `l` で動かす桁数。
 const STEP_COLUMNS: u16 = 4;
+/// マウスホイール 1 ノッチで動かす行数と桁数。
+const WHEEL_LINES: u16 = 3;
+const WHEEL_COLUMNS: u16 = 4;
 
 pub struct App {
     pub files: FileList,
@@ -70,7 +73,22 @@ impl App {
         self.update_diff();
     }
 
-    pub fn handle_key(&mut self, key: KeyEvent) {
+    pub fn handle_event(&mut self, event: Event) {
+        match event {
+            // 離したときやリピートのイベントも届く端末があるため、押下だけを拾う
+            Event::Key(key) if key.kind == KeyEventKind::Press => self.handle_key(key),
+            Event::Mouse(mouse) => match mouse.kind {
+                MouseEventKind::ScrollDown => self.viewport.scroll_down(WHEEL_LINES),
+                MouseEventKind::ScrollUp => self.viewport.scroll_up(WHEEL_LINES),
+                MouseEventKind::ScrollRight => self.viewport.scroll_right(WHEEL_COLUMNS),
+                MouseEventKind::ScrollLeft => self.viewport.scroll_left(WHEEL_COLUMNS),
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+
+    fn handle_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
 
@@ -149,7 +167,9 @@ mod tests {
     use super::App;
     use crate::highlight::HighlightedLine;
     use crate::test_support::{ScriptedSource, diff_line, entry, error};
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use crossterm::event::{
+        Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
+    };
     use ratatui::style::Style;
 
     /// 一覧の取得に失敗したら、その理由を残す。
@@ -195,7 +215,7 @@ mod tests {
         let mut app = App::new(source);
         assert!(app.last_error.is_some());
 
-        app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+        app.handle_event(press(KeyCode::Char('r')));
 
         assert_eq!(app.last_error, None);
         assert_eq!(app.files.entries().len(), 1);
@@ -219,10 +239,6 @@ mod tests {
         app.files.selected().map(|entry| entry.path.as_str())
     }
 
-    fn press(code: KeyCode) -> KeyEvent {
-        KeyEvent::new(code, KeyModifiers::NONE)
-    }
-
     fn paths(names: &[&str]) -> Vec<crate::git::FileEntry> {
         names.iter().map(|name| entry(name)).collect()
     }
@@ -231,7 +247,7 @@ mod tests {
     /// スクロールした状態にする。
     fn scroll_down_in_long_diff(app: &mut App) {
         app.viewport.set_visible_size(80, 10);
-        app.handle_key(press(KeyCode::Char('J')));
+        app.handle_event(press(KeyCode::Char('J')));
         assert_eq!(app.viewport.offset(), (10, 0));
     }
 
@@ -244,8 +260,8 @@ mod tests {
         let source = ScriptedSource::new().then_files(Err(error("index is corrupt")));
         let mut app = App::new(source);
 
-        app.handle_key(press(KeyCode::Char('j')));
-        app.handle_key(press(KeyCode::Char('k')));
+        app.handle_event(press(KeyCode::Char('j')));
+        app.handle_event(press(KeyCode::Char('k')));
 
         assert_eq!(selected(&app), None);
         assert!(app.highlighted_diff.is_empty());
@@ -270,8 +286,8 @@ mod tests {
         app.viewport.set_content(&app.highlighted_diff);
         scroll_down_in_long_diff(&mut app);
 
-        app.handle_key(press(KeyCode::Char('j')));
-        app.handle_key(press(KeyCode::Char('k')));
+        app.handle_event(press(KeyCode::Char('j')));
+        app.handle_event(press(KeyCode::Char('k')));
 
         assert_eq!(app.viewport.offset(), (10, 0));
         assert_eq!(app.highlighted_diff.len(), 30);
@@ -287,10 +303,10 @@ mod tests {
             .then_diff(long_diff())
             .then_diff(Ok(vec![diff_line("reread\n")]));
         let mut app = App::new(source);
-        app.handle_key(press(KeyCode::Char('j')));
+        app.handle_event(press(KeyCode::Char('j')));
         scroll_down_in_long_diff(&mut app);
 
-        app.handle_key(press(KeyCode::Char('j')));
+        app.handle_event(press(KeyCode::Char('j')));
 
         assert_eq!(selected(&app), Some("b.rs"));
         assert_eq!(app.viewport.offset(), (0, 0));
@@ -307,7 +323,7 @@ mod tests {
         let mut app = App::new(source);
         scroll_down_in_long_diff(&mut app);
 
-        app.handle_key(press(KeyCode::Char('k')));
+        app.handle_event(press(KeyCode::Char('k')));
 
         assert_eq!(selected(&app), Some("a.rs"));
         assert_eq!(app.viewport.offset(), (0, 0));
@@ -320,11 +336,11 @@ mod tests {
         let mut app = App::new(source);
         assert_eq!(selected(&app), Some("a.rs"));
 
-        app.handle_key(press(KeyCode::Char('j')));
+        app.handle_event(press(KeyCode::Char('j')));
         assert_eq!(selected(&app), Some("b.rs"));
-        app.handle_key(press(KeyCode::Char('j')));
+        app.handle_event(press(KeyCode::Char('j')));
         assert_eq!(selected(&app), Some("c.rs"));
-        app.handle_key(press(KeyCode::Char('k')));
+        app.handle_event(press(KeyCode::Char('k')));
         assert_eq!(selected(&app), Some("b.rs"));
     }
 
@@ -335,10 +351,10 @@ mod tests {
             .then_files(Ok(paths(&["a.rs", "b.rs", "c.rs"])))
             .then_files(Ok(paths(&["a.rs", "b.rs"])));
         let mut app = App::new(source);
-        app.handle_key(press(KeyCode::Char('j')));
-        app.handle_key(press(KeyCode::Char('j')));
+        app.handle_event(press(KeyCode::Char('j')));
+        app.handle_event(press(KeyCode::Char('j')));
 
-        app.handle_key(press(KeyCode::Char('r')));
+        app.handle_event(press(KeyCode::Char('r')));
 
         assert_eq!(selected(&app), Some("b.rs"));
     }
@@ -350,10 +366,10 @@ mod tests {
             .then_files(Ok(paths(&["b.rs", "c.rs"])))
             .then_files(Ok(paths(&["a.rs", "b.rs", "c.rs"])));
         let mut app = App::new(source);
-        app.handle_key(press(KeyCode::Char('j')));
+        app.handle_event(press(KeyCode::Char('j')));
         assert_eq!(selected(&app), Some("c.rs"));
 
-        app.handle_key(press(KeyCode::Char('r')));
+        app.handle_event(press(KeyCode::Char('r')));
 
         assert_eq!(selected(&app), Some("b.rs"));
     }
@@ -366,7 +382,7 @@ mod tests {
         let mut app = App::new(source);
         assert_eq!(selected(&app), None);
 
-        app.handle_key(press(KeyCode::Char('r')));
+        app.handle_event(press(KeyCode::Char('r')));
 
         assert_eq!(selected(&app), Some("a.rs"));
     }
@@ -380,9 +396,172 @@ mod tests {
         let mut app = App::new(source);
         assert!(!app.highlighted_diff.is_empty());
 
-        app.handle_key(press(KeyCode::Char('r')));
+        app.handle_event(press(KeyCode::Char('r')));
 
         assert_eq!(selected(&app), None);
         assert!(app.highlighted_diff.is_empty());
+    }
+
+    fn press(code: KeyCode) -> Event {
+        Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
+    }
+
+    fn ctrl(c: char) -> Event {
+        Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL))
+    }
+
+    fn wheel(kind: MouseEventKind) -> Event {
+        Event::Mouse(MouseEvent {
+            kind,
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        })
+    }
+
+    /// 2 ファイルあり、1 つ目の diff が 100 行・幅 201 桁（行頭マーカー込み）で、
+    /// 20 桁 x 10 行の枠に表示されている状態。縦は 90、横は 181 までスクロールできる。
+    fn scrollable_app() -> App {
+        let long_line = format!("{}\n", "x".repeat(200));
+        let source = ScriptedSource::new()
+            .then_files(Ok(vec![entry("a.rs"), entry("b.rs")]))
+            .then_diff(Ok(vec![diff_line(&long_line); 100]));
+        let mut app = App::new(source);
+        app.viewport.set_visible_size(20, 10);
+        app
+    }
+
+    #[test]
+    fn page_keys_scroll_ten_lines() {
+        for (down, up) in [
+            (press(KeyCode::Char('J')), press(KeyCode::Char('K'))),
+            (press(KeyCode::PageDown), press(KeyCode::PageUp)),
+            (ctrl('d'), ctrl('u')),
+        ] {
+            let mut app = scrollable_app();
+
+            app.handle_event(down.clone());
+            assert_eq!(app.viewport.offset(), (10, 0), "{down:?}");
+            app.handle_event(down.clone());
+            app.handle_event(up.clone());
+            assert_eq!(app.viewport.offset(), (10, 0), "{up:?}");
+        }
+    }
+
+    /// `d` / `u` が動くのは Ctrl と一緒に押したときだけ。
+    #[test]
+    fn d_and_u_without_ctrl_do_nothing() {
+        let mut app = scrollable_app();
+        app.handle_event(press(KeyCode::Char('J')));
+
+        app.handle_event(press(KeyCode::Char('d')));
+        app.handle_event(press(KeyCode::Char('u')));
+
+        assert_eq!(app.viewport.offset(), (10, 0));
+    }
+
+    #[test]
+    fn horizontal_keys_scroll_four_columns() {
+        for (right, left) in [
+            (press(KeyCode::Char('l')), press(KeyCode::Char('h'))),
+            (press(KeyCode::Right), press(KeyCode::Left)),
+        ] {
+            let mut app = scrollable_app();
+
+            app.handle_event(right.clone());
+            assert_eq!(app.viewport.offset(), (0, 4), "{right:?}");
+            app.handle_event(right.clone());
+            app.handle_event(left.clone());
+            assert_eq!(app.viewport.offset(), (0, 4), "{left:?}");
+        }
+    }
+
+    #[test]
+    fn jump_keys_move_to_edges() {
+        let mut app = scrollable_app();
+        app.handle_event(press(KeyCode::Char('l')));
+
+        app.handle_event(press(KeyCode::Char('G')));
+        assert_eq!(app.viewport.offset(), (90, 4));
+
+        app.handle_event(press(KeyCode::Char('0')));
+        assert_eq!(app.viewport.offset(), (90, 0));
+
+        app.handle_event(press(KeyCode::Char('l')));
+        app.handle_event(press(KeyCode::Char('g')));
+        assert_eq!(app.viewport.offset(), (0, 4));
+    }
+
+    #[test]
+    fn selection_keys_move_between_files_and_reset_scroll() {
+        for (next, prev) in [
+            (press(KeyCode::Char('j')), press(KeyCode::Char('k'))),
+            (press(KeyCode::Down), press(KeyCode::Up)),
+        ] {
+            let mut app = scrollable_app();
+            app.handle_event(press(KeyCode::Char('J')));
+
+            app.handle_event(next.clone());
+            assert_eq!(selected(&app), Some("b.rs"), "{next:?}");
+            assert_eq!(app.viewport.offset(), (0, 0), "{next:?}");
+
+            app.handle_event(prev.clone());
+            assert_eq!(selected(&app), Some("a.rs"), "{prev:?}");
+        }
+    }
+
+    #[test]
+    fn quit_keys_request_quit() {
+        for key in [press(KeyCode::Char('q')), press(KeyCode::Esc)] {
+            let mut app = scrollable_app();
+
+            app.handle_event(key.clone());
+
+            assert!(app.should_quit, "{key:?}");
+        }
+    }
+
+    #[test]
+    fn unbound_key_changes_nothing() {
+        let mut app = scrollable_app();
+        app.handle_event(press(KeyCode::Char('J')));
+
+        app.handle_event(press(KeyCode::Char('x')));
+
+        assert_eq!(app.viewport.offset(), (10, 0));
+        assert_eq!(selected(&app), Some("a.rs"));
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn wheel_scrolls_three_lines_or_four_columns_per_notch() {
+        let mut app = scrollable_app();
+
+        app.handle_event(wheel(MouseEventKind::ScrollDown));
+        app.handle_event(wheel(MouseEventKind::ScrollDown));
+        assert_eq!(app.viewport.offset(), (6, 0));
+        app.handle_event(wheel(MouseEventKind::ScrollUp));
+        assert_eq!(app.viewport.offset(), (3, 0));
+
+        app.handle_event(wheel(MouseEventKind::ScrollRight));
+        app.handle_event(wheel(MouseEventKind::ScrollRight));
+        assert_eq!(app.viewport.offset(), (3, 8));
+        app.handle_event(wheel(MouseEventKind::ScrollLeft));
+        assert_eq!(app.viewport.offset(), (3, 4));
+    }
+
+    /// キーを離したときやリピートのイベントでは動かない。拾うと 1 回の
+    /// 打鍵で 2 回動く端末がある。
+    #[test]
+    fn ignores_key_events_other_than_press() {
+        for kind in [KeyEventKind::Release, KeyEventKind::Repeat] {
+            let mut app = scrollable_app();
+            let mut key = KeyEvent::new(KeyCode::Char('J'), KeyModifiers::NONE);
+            key.kind = kind;
+
+            app.handle_event(Event::Key(key));
+
+            assert_eq!(app.viewport.offset(), (0, 0), "{kind:?}");
+        }
     }
 }
