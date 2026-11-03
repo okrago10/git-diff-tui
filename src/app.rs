@@ -143,8 +143,10 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::App;
+    use crate::highlight::HighlightedLine;
     use crate::test_support::{ScriptedSource, diff_line, entry, error};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::style::Style;
 
     /// 一覧の取得に失敗したら、その理由を残す。
     /// 残さないと「変更なし」と区別がつかず、画面が嘘をつく。
@@ -247,6 +249,28 @@ mod tests {
             app.last_error.as_deref(),
             Some("listing changed files: index is corrupt")
         );
+    }
+
+    /// 一覧が空なら `j` / `k` は表示位置も diff も触らない。
+    ///
+    /// 一覧が空のまま diff と表示位置が残る状態は通常の操作では作れないため、
+    /// 直接置いて、触ったかどうかが見えるようにする。
+    #[test]
+    fn j_and_k_on_empty_list_leave_scroll_and_diff_untouched() {
+        let mut app = App::new(ScriptedSource::new());
+        app.highlighted_diff = (0..30)
+            .map(|_| HighlightedLine {
+                spans: vec![(Style::default(), "line".to_string())],
+            })
+            .collect();
+        app.viewport.set_content(&app.highlighted_diff);
+        scroll_down_in_long_diff(&mut app);
+
+        app.handle_key(press(KeyCode::Char('j')));
+        app.handle_key(press(KeyCode::Char('k')));
+
+        assert_eq!(app.viewport.offset(), (10, 0));
+        assert_eq!(app.highlighted_diff.len(), 30);
     }
 
     /// 末尾で `j` を押しても選択は動かないが、表示位置は先頭に戻り、
