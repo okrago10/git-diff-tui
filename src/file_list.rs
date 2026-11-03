@@ -35,18 +35,19 @@ impl FileList {
     }
 
     /// 次のファイルを選ぶ。末尾では動かない。
-    /// 一覧が空なら何もせず `false` を返す。
+    /// 一覧が空なら何もせず `false` を返す。末尾で動かなかったときは `true` を返す。
     pub fn select_next(&mut self) -> bool {
-        let Some(last) = self.entries.len().checked_sub(1) else {
+        if self.entries.is_empty() {
             return false;
-        };
+        }
+        let last = self.entries.len() - 1;
         let next = self.state.selected().map_or(0, |i| (i + 1).min(last));
         self.state.select(Some(next));
         true
     }
 
     /// 前のファイルを選ぶ。先頭では動かない。
-    /// 一覧が空なら何もせず `false` を返す。
+    /// 一覧が空なら何もせず `false` を返す。先頭で動かなかったときは `true` を返す。
     pub fn select_prev(&mut self) -> bool {
         if self.entries.is_empty() {
             return false;
