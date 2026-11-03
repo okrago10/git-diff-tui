@@ -239,4 +239,149 @@ mod tests {
         assert_eq!(app.last_error, None);
         assert_eq!(app.files.len(), 1);
     }
+
+    fn press(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn paths(names: &[&str]) -> Vec<crate::git::FileEntry> {
+        names.iter().map(|name| entry(name)).collect()
+    }
+
+    /// 選択中のファイルの diff が 30 行あり、10 行ぶんの枠で 10 行下まで
+    /// スクロールした状態にする。
+    fn scroll_down_in_long_diff(app: &mut App) {
+        app.viewport.set_visible_size(80, 10);
+        app.handle_key(press(KeyCode::Char('J')));
+        assert_eq!(app.viewport.offset(), (10, 0));
+    }
+
+    fn long_diff() -> Result<Vec<crate::git::DiffLine>, git2::Error> {
+        Ok(vec![diff_line("line\n"); 30])
+    }
+
+    #[test]
+    fn j_and_k_on_empty_list_select_nothing_and_keep_error() {
+        let source = ScriptedSource::new().then_files(Err(error("index is corrupt")));
+        let mut app = App::new(source);
+
+        app.handle_key(press(KeyCode::Char('j')));
+        app.handle_key(press(KeyCode::Char('k')));
+
+        assert_eq!(app.selected_file_path(), None);
+        assert!(app.highlighted_diff.is_empty());
+        assert_eq!(
+            app.last_error.as_deref(),
+            Some("listing changed files: index is corrupt")
+        );
+    }
+
+    /// 末尾で `j` を押しても選択は動かないが、表示位置は先頭に戻り、
+    /// diff は読み直される。
+    #[test]
+    fn j_on_last_file_keeps_selection_but_resets_scroll_and_rereads_diff() {
+        let source = ScriptedSource::new()
+            .then_files(Ok(paths(&["a.rs", "b.rs"])))
+            .then_diff(Ok(vec![diff_line("a\n")]))
+            .then_diff(long_diff())
+            .then_diff(Ok(vec![diff_line("reread\n")]));
+        let mut app = App::new(source);
+        app.handle_key(press(KeyCode::Char('j')));
+        scroll_down_in_long_diff(&mut app);
+
+        app.handle_key(press(KeyCode::Char('j')));
+
+        assert_eq!(app.selected_file_path(), Some("b.rs"));
+        assert_eq!(app.viewport.offset(), (0, 0));
+        assert_eq!(app.highlighted_diff.len(), 1);
+    }
+
+    /// 先頭で `k` を押したときも同じ。
+    #[test]
+    fn k_on_first_file_keeps_selection_but_resets_scroll_and_rereads_diff() {
+        let source = ScriptedSource::new()
+            .then_files(Ok(paths(&["a.rs", "b.rs"])))
+            .then_diff(long_diff())
+            .then_diff(Ok(vec![diff_line("reread\n")]));
+        let mut app = App::new(source);
+        scroll_down_in_long_diff(&mut app);
+
+        app.handle_key(press(KeyCode::Char('k')));
+
+        assert_eq!(app.selected_file_path(), Some("a.rs"));
+        assert_eq!(app.viewport.offset(), (0, 0));
+        assert_eq!(app.highlighted_diff.len(), 1);
+    }
+
+    #[test]
+    fn j_then_k_walks_through_files_in_order() {
+        let source = ScriptedSource::new().then_files(Ok(paths(&["a.rs", "b.rs", "c.rs"])));
+        let mut app = App::new(source);
+        assert_eq!(app.selected_file_path(), Some("a.rs"));
+
+        app.handle_key(press(KeyCode::Char('j')));
+        assert_eq!(app.selected_file_path(), Some("b.rs"));
+        app.handle_key(press(KeyCode::Char('j')));
+        assert_eq!(app.selected_file_path(), Some("c.rs"));
+        app.handle_key(press(KeyCode::Char('k')));
+        assert_eq!(app.selected_file_path(), Some("b.rs"));
+    }
+
+    /// 一覧が縮んで選択位置がはみ出したら、末尾に詰める。
+    #[test]
+    fn refresh_clamps_selection_when_list_shrinks() {
+        let source = ScriptedSource::new()
+            .then_files(Ok(paths(&["a.rs", "b.rs", "c.rs"])))
+            .then_files(Ok(paths(&["a.rs", "b.rs"])));
+        let mut app = App::new(source);
+        app.handle_key(press(KeyCode::Char('j')));
+        app.handle_key(press(KeyCode::Char('j')));
+
+        app.handle_key(press(KeyCode::Char('r')));
+
+        assert_eq!(app.selected_file_path(), Some("b.rs"));
+    }
+
+    /// 一覧が伸びても、選択は同じ位置に留まる（同じファイルを追うのではない）。
+    #[test]
+    fn refresh_keeps_selection_index_when_list_grows() {
+        let source = ScriptedSource::new()
+            .then_files(Ok(paths(&["b.rs", "c.rs"])))
+            .then_files(Ok(paths(&["a.rs", "b.rs", "c.rs"])));
+        let mut app = App::new(source);
+        app.handle_key(press(KeyCode::Char('j')));
+        assert_eq!(app.selected_file_path(), Some("c.rs"));
+
+        app.handle_key(press(KeyCode::Char('r')));
+
+        assert_eq!(app.selected_file_path(), Some("b.rs"));
+    }
+
+    #[test]
+    fn refresh_from_empty_list_selects_first_file() {
+        let source = ScriptedSource::new()
+            .then_files(Ok(Vec::new()))
+            .then_files(Ok(paths(&["a.rs", "b.rs"])));
+        let mut app = App::new(source);
+        assert_eq!(app.selected_file_path(), None);
+
+        app.handle_key(press(KeyCode::Char('r')));
+
+        assert_eq!(app.selected_file_path(), Some("a.rs"));
+    }
+
+    #[test]
+    fn refresh_to_empty_list_clears_selection_and_diff() {
+        let source = ScriptedSource::new()
+            .then_files(Ok(paths(&["a.rs"])))
+            .then_diff(Ok(vec![diff_line("a\n")]))
+            .then_files(Ok(Vec::new()));
+        let mut app = App::new(source);
+        assert!(!app.highlighted_diff.is_empty());
+
+        app.handle_key(press(KeyCode::Char('r')));
+
+        assert_eq!(app.selected_file_path(), None);
+        assert!(app.highlighted_diff.is_empty());
+    }
 }
