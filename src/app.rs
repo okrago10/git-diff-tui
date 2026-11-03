@@ -1,7 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::widgets::ListState;
 
-use crate::git::{DiffSource, FileEntry};
+use crate::file_list::FileList;
+use crate::git::DiffSource;
 use crate::highlight::{HighlightedLine, Highlighter};
 use crate::viewport::DiffViewport;
 
@@ -11,8 +11,7 @@ const PAGE_LINES: u16 = 10;
 const STEP_COLUMNS: u16 = 4;
 
 pub struct App {
-    pub files: Vec<FileEntry>,
-    pub list_state: ListState,
+    pub files: FileList,
     /// 表示中の diff にハイライトを適用した結果。描画のたびに計算し直すと
     /// 最大 10,000 行ぶんの syntect 呼び出しが毎フレーム走るため、diff が
     /// 切り替わったときにだけ更新する。
@@ -29,8 +28,7 @@ pub struct App {
 impl App {
     pub fn new(source: impl DiffSource + 'static) -> Self {
         let mut app = Self {
-            files: Vec::new(),
-            list_state: ListState::default(),
+            files: FileList::default(),
             highlighted_diff: Vec::new(),
             viewport: DiffViewport::new(),
             should_quit: false,
@@ -63,19 +61,10 @@ impl App {
     /// ファイル一覧を読み直し、選択と diff を合わせる。
     fn reload_files(&mut self) {
         let result = self.source.changed_files();
-        self.files = self
+        let files = self
             .ok_or_record_error("listing changed files", result)
             .unwrap_or_default();
-        if self.files.is_empty() {
-            self.list_state.select(None);
-        } else {
-            let index = self
-                .list_state
-                .selected()
-                .unwrap_or(0)
-                .min(self.files.len() - 1);
-            self.list_state.select(Some(index));
-        }
+        self.files.replace(files);
         // 一覧が空になった場合も update_diff を通す。表示内容と viewport を
         // 別経路で更新すると、両者がずれる。
         self.update_diff();
@@ -116,43 +105,30 @@ impl App {
     }
 
     fn next_file(&mut self) {
-        if self.files.is_empty() {
-            return;
-        }
-        let i = match self.list_state.selected() {
-            Some(i) => (i + 1).min(self.files.len() - 1),
-            None => 0,
-        };
-        self.list_state.select(Some(i));
+        self.files.select_next();
         self.viewport.reset();
         self.update_diff();
     }
 
     fn prev_file(&mut self) {
-        if self.files.is_empty() {
-            return;
-        }
-        let i = match self.list_state.selected() {
-            Some(i) => i.saturating_sub(1),
-            None => 0,
-        };
-        self.list_state.select(Some(i));
+        self.files.select_prev();
         self.viewport.reset();
         self.update_diff();
     }
 
     fn update_diff(&mut self) {
-        let diff = match self.list_state.selected() {
-            Some(i) if i < self.files.len() => {
-                let result = self.source.file_diff(&self.files[i]);
-                self.ok_or_record_error("reading diff", result)
-                    .unwrap_or_default()
-            }
-            _ => Vec::new(),
+        let result = self
+            .files
+            .selected()
+            .map(|entry| self.source.file_diff(entry));
+        let diff = match result {
+            Some(result) => self
+                .ok_or_record_error("reading diff", result)
+                .unwrap_or_default(),
+            None => Vec::new(),
         };
-        let highlighted = self
-            .highlighter
-            .highlight_diff(&diff, self.selected_file_path());
+        let path = self.files.selected().map(|entry| entry.path.as_str());
+        let highlighted = self.highlighter.highlight_diff(&diff, path);
         self.highlighted_diff = highlighted;
         self.viewport.set_content(&self.highlighted_diff);
     }
@@ -161,13 +137,6 @@ impl App {
     fn refresh(&mut self) {
         self.reload_files();
         self.viewport.reset();
-    }
-
-    pub fn selected_file_path(&self) -> Option<&str> {
-        self.list_state
-            .selected()
-            .and_then(|i| self.files.get(i))
-            .map(|f| f.path.as_str())
     }
 }
 
@@ -189,7 +158,7 @@ mod tests {
             app.last_error.as_deref(),
             Some("listing changed files: index is corrupt")
         );
-        assert!(app.files.is_empty());
+        assert!(app.files.entries().is_empty());
     }
 
     /// diff の取得に失敗したときも理由を残す。表示は空になるので、
@@ -223,7 +192,7 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
 
         assert_eq!(app.last_error, None);
-        assert_eq!(app.files.len(), 1);
+        assert_eq!(app.files.entries().len(), 1);
         assert!(!app.highlighted_diff.is_empty());
     }
 
@@ -237,7 +206,11 @@ mod tests {
         let app = App::new(source);
 
         assert_eq!(app.last_error, None);
-        assert_eq!(app.files.len(), 1);
+        assert_eq!(app.files.entries().len(), 1);
+    }
+
+    fn selected(app: &App) -> Option<&str> {
+        app.files.selected().map(|entry| entry.path.as_str())
     }
 
     fn press(code: KeyCode) -> KeyEvent {
@@ -268,7 +241,7 @@ mod tests {
         app.handle_key(press(KeyCode::Char('j')));
         app.handle_key(press(KeyCode::Char('k')));
 
-        assert_eq!(app.selected_file_path(), None);
+        assert_eq!(selected(&app), None);
         assert!(app.highlighted_diff.is_empty());
         assert_eq!(
             app.last_error.as_deref(),
@@ -291,7 +264,7 @@ mod tests {
 
         app.handle_key(press(KeyCode::Char('j')));
 
-        assert_eq!(app.selected_file_path(), Some("b.rs"));
+        assert_eq!(selected(&app), Some("b.rs"));
         assert_eq!(app.viewport.offset(), (0, 0));
         assert_eq!(app.highlighted_diff.len(), 1);
     }
@@ -308,7 +281,7 @@ mod tests {
 
         app.handle_key(press(KeyCode::Char('k')));
 
-        assert_eq!(app.selected_file_path(), Some("a.rs"));
+        assert_eq!(selected(&app), Some("a.rs"));
         assert_eq!(app.viewport.offset(), (0, 0));
         assert_eq!(app.highlighted_diff.len(), 1);
     }
@@ -317,14 +290,14 @@ mod tests {
     fn j_then_k_walks_through_files_in_order() {
         let source = ScriptedSource::new().then_files(Ok(paths(&["a.rs", "b.rs", "c.rs"])));
         let mut app = App::new(source);
-        assert_eq!(app.selected_file_path(), Some("a.rs"));
+        assert_eq!(selected(&app), Some("a.rs"));
 
         app.handle_key(press(KeyCode::Char('j')));
-        assert_eq!(app.selected_file_path(), Some("b.rs"));
+        assert_eq!(selected(&app), Some("b.rs"));
         app.handle_key(press(KeyCode::Char('j')));
-        assert_eq!(app.selected_file_path(), Some("c.rs"));
+        assert_eq!(selected(&app), Some("c.rs"));
         app.handle_key(press(KeyCode::Char('k')));
-        assert_eq!(app.selected_file_path(), Some("b.rs"));
+        assert_eq!(selected(&app), Some("b.rs"));
     }
 
     /// 一覧が縮んで選択位置がはみ出したら、末尾に詰める。
@@ -339,7 +312,7 @@ mod tests {
 
         app.handle_key(press(KeyCode::Char('r')));
 
-        assert_eq!(app.selected_file_path(), Some("b.rs"));
+        assert_eq!(selected(&app), Some("b.rs"));
     }
 
     /// 一覧が伸びても、選択は同じ位置に留まる（同じファイルを追うのではない）。
@@ -350,11 +323,11 @@ mod tests {
             .then_files(Ok(paths(&["a.rs", "b.rs", "c.rs"])));
         let mut app = App::new(source);
         app.handle_key(press(KeyCode::Char('j')));
-        assert_eq!(app.selected_file_path(), Some("c.rs"));
+        assert_eq!(selected(&app), Some("c.rs"));
 
         app.handle_key(press(KeyCode::Char('r')));
 
-        assert_eq!(app.selected_file_path(), Some("b.rs"));
+        assert_eq!(selected(&app), Some("b.rs"));
     }
 
     #[test]
@@ -363,11 +336,11 @@ mod tests {
             .then_files(Ok(Vec::new()))
             .then_files(Ok(paths(&["a.rs", "b.rs"])));
         let mut app = App::new(source);
-        assert_eq!(app.selected_file_path(), None);
+        assert_eq!(selected(&app), None);
 
         app.handle_key(press(KeyCode::Char('r')));
 
-        assert_eq!(app.selected_file_path(), Some("a.rs"));
+        assert_eq!(selected(&app), Some("a.rs"));
     }
 
     #[test]
@@ -381,7 +354,7 @@ mod tests {
 
         app.handle_key(press(KeyCode::Char('r')));
 
-        assert_eq!(app.selected_file_path(), None);
+        assert_eq!(selected(&app), None);
         assert!(app.highlighted_diff.is_empty());
     }
 }
