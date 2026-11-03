@@ -35,17 +35,25 @@ impl FileList {
     }
 
     /// 次のファイルを選ぶ。末尾では動かない。
-    pub fn select_next(&mut self) {
-        if let Some(i) = self.state.selected() {
-            self.state.select(Some((i + 1).min(self.entries.len() - 1)));
-        }
+    /// 一覧が空なら何もせず `false` を返す。
+    pub fn select_next(&mut self) -> bool {
+        let Some(last) = self.entries.len().checked_sub(1) else {
+            return false;
+        };
+        let next = self.state.selected().map_or(0, |i| (i + 1).min(last));
+        self.state.select(Some(next));
+        true
     }
 
     /// 前のファイルを選ぶ。先頭では動かない。
-    pub fn select_prev(&mut self) {
-        if let Some(i) = self.state.selected() {
-            self.state.select(Some(i.saturating_sub(1)));
+    /// 一覧が空なら何もせず `false` を返す。
+    pub fn select_prev(&mut self) -> bool {
+        if self.entries.is_empty() {
+            return false;
         }
+        let prev = self.state.selected().map_or(0, |i| i.saturating_sub(1));
+        self.state.select(Some(prev));
+        true
     }
 
     /// 描画用。ratatui の `List` は描画時にこれを読み書きする。
@@ -78,19 +86,46 @@ mod tests {
     fn empty_list_selects_nothing_and_ignores_moves() {
         let mut list = list_of(&[]);
 
-        list.select_next();
-        list.select_prev();
+        assert!(!list.select_next());
+        assert!(!list.select_prev());
 
         assert_eq!(selected(&list), None);
     }
 
+    /// `state_mut` 経由で選択が残ったまま一覧が空になっていても、動かそうとして
+    /// 桁あふれしない。
+    #[test]
+    fn empty_list_with_stale_selection_ignores_moves() {
+        let mut list = list_of(&[]);
+        list.state_mut().select(Some(0));
+
+        assert!(!list.select_next());
+        assert!(!list.select_prev());
+
+        assert_eq!(selected(&list), None);
+    }
+
+    /// 端で止まっても、選ぶ対象はあったので `true` を返す。
     #[test]
     fn single_entry_stays_selected() {
         let mut list = list_of(&["a.rs"]);
 
-        list.select_next();
+        assert!(list.select_next());
         assert_eq!(selected(&list), Some("a.rs"));
-        list.select_prev();
+        assert!(list.select_prev());
+        assert_eq!(selected(&list), Some("a.rs"));
+    }
+
+    #[test]
+    fn moves_without_selection_pick_first() {
+        let mut list = list_of(&["a.rs", "b.rs"]);
+
+        list.state_mut().select(None);
+        assert!(list.select_next());
+        assert_eq!(selected(&list), Some("a.rs"));
+
+        list.state_mut().select(None);
+        assert!(list.select_prev());
         assert_eq!(selected(&list), Some("a.rs"));
     }
 

@@ -105,13 +105,17 @@ impl App {
     }
 
     fn next_file(&mut self) {
-        self.files.select_next();
+        if !self.files.select_next() {
+            return;
+        }
         self.viewport.reset();
         self.update_diff();
     }
 
     fn prev_file(&mut self) {
-        self.files.select_prev();
+        if !self.files.select_prev() {
+            return;
+        }
         self.viewport.reset();
         self.update_diff();
     }
