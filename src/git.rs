@@ -26,7 +26,8 @@ impl ChangeKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// 宣言順がそのまま一覧の並び順になる（staged が先）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Stage {
     Staged,
     Unstaged,
@@ -201,11 +202,7 @@ impl DiffSource for GitRepo {
         }
 
         // sort: staged first, then by path
-        entries.sort_by(|a, b| {
-            a.stage
-                .cmp_staged_first(&b.stage)
-                .then_with(|| a.path.cmp(&b.path))
-        });
+        entries.sort_by(|a, b| a.stage.cmp(&b.stage).then_with(|| a.path.cmp(&b.path)));
 
         Ok(entries)
     }
@@ -244,16 +241,6 @@ impl DiffSource for GitRepo {
         }
 
         Ok(lines)
-    }
-}
-
-impl Stage {
-    fn cmp_staged_first(&self, other: &Self) -> std::cmp::Ordering {
-        match (self, other) {
-            (Stage::Staged, Stage::Unstaged) => std::cmp::Ordering::Less,
-            (Stage::Unstaged, Stage::Staged) => std::cmp::Ordering::Greater,
-            _ => std::cmp::Ordering::Equal,
-        }
     }
 }
 
