@@ -239,4 +239,126 @@ mod tests {
         assert_eq!(app.last_error, None);
         assert_eq!(app.files.len(), 1);
     }
+
+    fn press(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn ctrl(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+    }
+
+    /// 2 ファイルあり、1 つ目の diff が 100 行・幅 201 桁（行頭マーカー込み）で、
+    /// 20 桁 x 10 行の枠に表示されている状態。縦は 90、横は 181 までスクロールできる。
+    fn scrollable_app() -> App {
+        let long_line = format!("{}\n", "x".repeat(200));
+        let source = ScriptedSource::new()
+            .then_files(Ok(vec![entry("a.rs"), entry("b.rs")]))
+            .then_diff(Ok(vec![diff_line(&long_line); 100]));
+        let mut app = App::new(source);
+        app.viewport.set_visible_size(20, 10);
+        app
+    }
+
+    #[test]
+    fn page_keys_scroll_ten_lines() {
+        for (down, up) in [
+            (press(KeyCode::Char('J')), press(KeyCode::Char('K'))),
+            (press(KeyCode::PageDown), press(KeyCode::PageUp)),
+            (ctrl('d'), ctrl('u')),
+        ] {
+            let mut app = scrollable_app();
+
+            app.handle_key(down);
+            assert_eq!(app.viewport.offset(), (10, 0), "{down:?}");
+            app.handle_key(down);
+            app.handle_key(up);
+            assert_eq!(app.viewport.offset(), (10, 0), "{up:?}");
+        }
+    }
+
+    /// `d` / `u` が動くのは Ctrl と一緒に押したときだけ。
+    #[test]
+    fn d_and_u_without_ctrl_do_nothing() {
+        let mut app = scrollable_app();
+        app.handle_key(press(KeyCode::Char('J')));
+
+        app.handle_key(press(KeyCode::Char('d')));
+        app.handle_key(press(KeyCode::Char('u')));
+
+        assert_eq!(app.viewport.offset(), (10, 0));
+    }
+
+    #[test]
+    fn horizontal_keys_scroll_four_columns() {
+        for (right, left) in [
+            (press(KeyCode::Char('l')), press(KeyCode::Char('h'))),
+            (press(KeyCode::Right), press(KeyCode::Left)),
+        ] {
+            let mut app = scrollable_app();
+
+            app.handle_key(right);
+            assert_eq!(app.viewport.offset(), (0, 4), "{right:?}");
+            app.handle_key(right);
+            app.handle_key(left);
+            assert_eq!(app.viewport.offset(), (0, 4), "{left:?}");
+        }
+    }
+
+    #[test]
+    fn jump_keys_move_to_edges() {
+        let mut app = scrollable_app();
+        app.handle_key(press(KeyCode::Char('l')));
+
+        app.handle_key(press(KeyCode::Char('G')));
+        assert_eq!(app.viewport.offset(), (90, 4));
+
+        app.handle_key(press(KeyCode::Char('0')));
+        assert_eq!(app.viewport.offset(), (90, 0));
+
+        app.handle_key(press(KeyCode::Char('l')));
+        app.handle_key(press(KeyCode::Char('g')));
+        assert_eq!(app.viewport.offset(), (0, 4));
+    }
+
+    #[test]
+    fn selection_keys_move_between_files_and_reset_scroll() {
+        for (next, prev) in [
+            (press(KeyCode::Char('j')), press(KeyCode::Char('k'))),
+            (press(KeyCode::Down), press(KeyCode::Up)),
+        ] {
+            let mut app = scrollable_app();
+            app.handle_key(press(KeyCode::Char('J')));
+
+            app.handle_key(next);
+            assert_eq!(app.selected_file_path(), Some("b.rs"), "{next:?}");
+            assert_eq!(app.viewport.offset(), (0, 0), "{next:?}");
+
+            app.handle_key(prev);
+            assert_eq!(app.selected_file_path(), Some("a.rs"), "{prev:?}");
+        }
+    }
+
+    #[test]
+    fn quit_keys_request_quit() {
+        for key in [press(KeyCode::Char('q')), press(KeyCode::Esc)] {
+            let mut app = scrollable_app();
+
+            app.handle_key(key);
+
+            assert!(app.should_quit, "{key:?}");
+        }
+    }
+
+    #[test]
+    fn unbound_key_changes_nothing() {
+        let mut app = scrollable_app();
+        app.handle_key(press(KeyCode::Char('J')));
+
+        app.handle_key(press(KeyCode::Char('x')));
+
+        assert_eq!(app.viewport.offset(), (10, 0));
+        assert_eq!(app.selected_file_path(), Some("a.rs"));
+        assert!(!app.should_quit);
+    }
 }
