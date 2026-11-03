@@ -1,4 +1,4 @@
-use git2::{Delta, Diff, DiffOptions, Repository};
+use git2::{Delta, Diff, DiffOptions, Repository, Tree};
 use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,6 +93,12 @@ impl GitRepo {
         Ok(Self { repo })
     }
 
+    /// HEAD のツリー。コミットが 1 つも無いリポジトリでは `None` になり、
+    /// 空のツリーとの差分として扱われる。
+    fn head_tree(&self) -> Option<Tree<'_>> {
+        self.repo.head().and_then(|r| r.peel_to_tree()).ok()
+    }
+
     fn diff_for_entry(&self, entry: &FileEntry) -> Result<Diff<'_>, git2::Error> {
         let mut opts = DiffOptions::new();
         opts.pathspec(&entry.path);
@@ -101,9 +107,8 @@ impl GitRepo {
 
         match entry.stage {
             Stage::Staged => {
-                let head_tree = self.repo.head().and_then(|r| r.peel_to_tree()).ok();
                 self.repo
-                    .diff_tree_to_index(head_tree.as_ref(), None, Some(&mut opts))
+                    .diff_tree_to_index(self.head_tree().as_ref(), None, Some(&mut opts))
             }
             Stage::Unstaged => self.repo.diff_index_to_workdir(None, Some(&mut opts)),
         }
@@ -144,66 +149,18 @@ impl GitRepo {
 
 impl DiffSource for GitRepo {
     fn changed_files(&self) -> Result<Vec<FileEntry>, git2::Error> {
-        let mut entries = Vec::new();
-
-        // staged changes: HEAD tree vs index
-        let head_tree = self
-            .repo
-            .head()
-            .and_then(|r| r.peel_to_tree())
-            .ok();
-
-        let staged_diff = self.repo.diff_tree_to_index(
-            head_tree.as_ref(),
+        let staged = self.repo.diff_tree_to_index(
+            self.head_tree().as_ref(),
             None,
             Some(&mut DiffOptions::new()),
         )?;
+        let unstaged = self
+            .repo
+            .diff_index_to_workdir(None, Some(DiffOptions::new().include_untracked(true)))?;
 
-        for delta in staged_diff.deltas() {
-            let path = delta
-                .new_file()
-                .path()
-                .or_else(|| delta.old_file().path())
-                .unwrap_or(Path::new("unknown"))
-                .to_string_lossy()
-                .to_string();
-
-            if let Some(kind) = delta_to_change_kind(delta.status()) {
-                entries.push(FileEntry {
-                    path,
-                    kind,
-                    stage: Stage::Staged,
-                });
-            }
-        }
-
-        // unstaged changes: index vs workdir
-        let unstaged_diff = self.repo.diff_index_to_workdir(
-            None,
-            Some(DiffOptions::new().include_untracked(true)),
-        )?;
-
-        for delta in unstaged_diff.deltas() {
-            let path = delta
-                .new_file()
-                .path()
-                .or_else(|| delta.old_file().path())
-                .unwrap_or(Path::new("unknown"))
-                .to_string_lossy()
-                .to_string();
-
-            if let Some(kind) = delta_to_change_kind(delta.status()) {
-                entries.push(FileEntry {
-                    path,
-                    kind,
-                    stage: Stage::Unstaged,
-                });
-            }
-        }
-
-        // sort: staged first, then by path
+        let mut entries = entries_in(&staged, Stage::Staged);
+        entries.extend(entries_in(&unstaged, Stage::Unstaged));
         entries.sort_by(|a, b| a.stage.cmp(&b.stage).then_with(|| a.path.cmp(&b.path)));
-
         Ok(entries)
     }
 
@@ -242,6 +199,22 @@ impl DiffSource for GitRepo {
 
         Ok(lines)
     }
+}
+
+fn entries_in(diff: &Diff<'_>, stage: Stage) -> Vec<FileEntry> {
+    diff.deltas()
+        .filter_map(|delta| {
+            let kind = delta_to_change_kind(delta.status())?;
+            let path = delta
+                .new_file()
+                .path()
+                .or_else(|| delta.old_file().path())
+                .unwrap_or(Path::new("unknown"))
+                .to_string_lossy()
+                .to_string();
+            Some(FileEntry { path, kind, stage })
+        })
+        .collect()
 }
 
 fn delta_to_change_kind(status: Delta) -> Option<ChangeKind> {
