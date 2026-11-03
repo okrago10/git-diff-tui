@@ -158,8 +158,8 @@ impl DiffSource for GitRepo {
             .repo
             .diff_index_to_workdir(None, Some(DiffOptions::new().include_untracked(true)))?;
 
-        let mut entries = entries_in(&staged, Stage::Staged);
-        entries.extend(entries_in(&unstaged, Stage::Unstaged));
+        let mut entries = entries_from_diff(&staged, Stage::Staged);
+        entries.extend(entries_from_diff(&unstaged, Stage::Unstaged));
         entries.sort_by(|a, b| a.stage.cmp(&b.stage).then_with(|| a.path.cmp(&b.path)));
         Ok(entries)
     }
@@ -201,7 +201,7 @@ impl DiffSource for GitRepo {
     }
 }
 
-fn entries_in(diff: &Diff<'_>, stage: Stage) -> Vec<FileEntry> {
+fn entries_from_diff(diff: &Diff<'_>, stage: Stage) -> Vec<FileEntry> {
     diff.deltas()
         .filter_map(|delta| {
             let kind = delta_to_change_kind(delta.status())?;
