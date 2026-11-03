@@ -1,4 +1,5 @@
 mod app;
+mod file_list;
 mod git;
 mod highlight;
 mod ui;

@@ -41,6 +41,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 fn draw_file_list(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
     let items: Vec<ListItem> = app
         .files
+        .entries()
         .iter()
         .map(|entry| {
             let icon_color = match entry.stage {
@@ -83,7 +84,7 @@ fn draw_file_list(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect)
         )
         .highlight_symbol("▶ ");
 
-    frame.render_stateful_widget(list, area, &mut app.list_state);
+    frame.render_stateful_widget(list, area, app.files.state_mut());
 }
 
 fn draw_diff_preview(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
@@ -106,7 +107,7 @@ fn draw_diff_preview(frame: &mut Frame, app: &mut App, area: ratatui::layout::Re
     }
 
     if app.highlighted_diff.is_empty() {
-        let msg = if app.files.is_empty() {
+        let msg = if app.files.entries().is_empty() {
             "No changes detected"
         } else {
             "Select a file to view diff"
@@ -156,9 +157,9 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             ),
         ],
         None => {
-            let file_count = app.files.len();
-            let staged = app
-                .files
+            let files = app.files.entries();
+            let file_count = files.len();
+            let staged = files
                 .iter()
                 .filter(|f| f.stage == crate::git::Stage::Staged)
                 .count();

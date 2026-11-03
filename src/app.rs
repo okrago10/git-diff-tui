@@ -1,7 +1,7 @@
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEventKind};
-use ratatui::widgets::ListState;
 
-use crate::git::{DiffSource, FileEntry};
+use crate::file_list::FileList;
+use crate::git::DiffSource;
 use crate::highlight::{HighlightedLine, Highlighter};
 use crate::viewport::DiffViewport;
 
@@ -14,8 +14,7 @@ const WHEEL_LINES: u16 = 3;
 const WHEEL_COLUMNS: u16 = 4;
 
 pub struct App {
-    pub files: Vec<FileEntry>,
-    pub list_state: ListState,
+    pub files: FileList,
     /// 表示中の diff にハイライトを適用した結果。描画のたびに計算し直すと
     /// 最大 10,000 行ぶんの syntect 呼び出しが毎フレーム走るため、diff が
     /// 切り替わったときにだけ更新する。
@@ -32,8 +31,7 @@ pub struct App {
 impl App {
     pub fn new(source: impl DiffSource + 'static) -> Self {
         let mut app = Self {
-            files: Vec::new(),
-            list_state: ListState::default(),
+            files: FileList::default(),
             highlighted_diff: Vec::new(),
             viewport: DiffViewport::new(),
             should_quit: false,
@@ -66,19 +64,10 @@ impl App {
     /// ファイル一覧を読み直し、選択と diff を合わせる。
     fn reload_files(&mut self) {
         let result = self.source.changed_files();
-        self.files = self
+        let files = self
             .ok_or_record_error("listing changed files", result)
             .unwrap_or_default();
-        if self.files.is_empty() {
-            self.list_state.select(None);
-        } else {
-            let index = self
-                .list_state
-                .selected()
-                .unwrap_or(0)
-                .min(self.files.len() - 1);
-            self.list_state.select(Some(index));
-        }
+        self.files.replace(files);
         // 一覧が空になった場合も update_diff を通す。表示内容と viewport を
         // 別経路で更新すると、両者がずれる。
         self.update_diff();
@@ -134,43 +123,34 @@ impl App {
     }
 
     fn next_file(&mut self) {
-        if self.files.is_empty() {
+        if !self.files.select_next() {
             return;
         }
-        let i = match self.list_state.selected() {
-            Some(i) => (i + 1).min(self.files.len() - 1),
-            None => 0,
-        };
-        self.list_state.select(Some(i));
         self.viewport.reset();
         self.update_diff();
     }
 
     fn prev_file(&mut self) {
-        if self.files.is_empty() {
+        if !self.files.select_prev() {
             return;
         }
-        let i = match self.list_state.selected() {
-            Some(i) => i.saturating_sub(1),
-            None => 0,
-        };
-        self.list_state.select(Some(i));
         self.viewport.reset();
         self.update_diff();
     }
 
     fn update_diff(&mut self) {
-        let diff = match self.list_state.selected() {
-            Some(i) if i < self.files.len() => {
-                let result = self.source.file_diff(&self.files[i]);
-                self.ok_or_record_error("reading diff", result)
-                    .unwrap_or_default()
-            }
-            _ => Vec::new(),
+        let result = self
+            .files
+            .selected()
+            .map(|entry| self.source.file_diff(entry));
+        let diff = match result {
+            Some(result) => self
+                .ok_or_record_error("reading diff", result)
+                .unwrap_or_default(),
+            None => Vec::new(),
         };
-        let highlighted = self
-            .highlighter
-            .highlight_diff(&diff, self.selected_file_path());
+        let path = self.files.selected().map(|entry| entry.path.as_str());
+        let highlighted = self.highlighter.highlight_diff(&diff, path);
         self.highlighted_diff = highlighted;
         self.viewport.set_content(&self.highlighted_diff);
     }
@@ -180,22 +160,17 @@ impl App {
         self.reload_files();
         self.viewport.reset();
     }
-
-    pub fn selected_file_path(&self) -> Option<&str> {
-        self.list_state
-            .selected()
-            .and_then(|i| self.files.get(i))
-            .map(|f| f.path.as_str())
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::App;
+    use crate::highlight::HighlightedLine;
     use crate::test_support::{ScriptedSource, diff_line, entry, error};
     use crossterm::event::{
         Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
     };
+    use ratatui::style::Style;
 
     /// 一覧の取得に失敗したら、その理由を残す。
     /// 残さないと「変更なし」と区別がつかず、画面が嘘をつく。
@@ -209,7 +184,7 @@ mod tests {
             app.last_error.as_deref(),
             Some("listing changed files: index is corrupt")
         );
-        assert!(app.files.is_empty());
+        assert!(app.files.entries().is_empty());
     }
 
     /// diff の取得に失敗したときも理由を残す。表示は空になるので、
@@ -243,7 +218,7 @@ mod tests {
         app.handle_event(press(KeyCode::Char('r')));
 
         assert_eq!(app.last_error, None);
-        assert_eq!(app.files.len(), 1);
+        assert_eq!(app.files.entries().len(), 1);
         assert!(!app.highlighted_diff.is_empty());
     }
 
@@ -257,7 +232,174 @@ mod tests {
         let app = App::new(source);
 
         assert_eq!(app.last_error, None);
-        assert_eq!(app.files.len(), 1);
+        assert_eq!(app.files.entries().len(), 1);
+    }
+
+    fn selected(app: &App) -> Option<&str> {
+        app.files.selected().map(|entry| entry.path.as_str())
+    }
+
+    fn paths(names: &[&str]) -> Vec<crate::git::FileEntry> {
+        names.iter().map(|name| entry(name)).collect()
+    }
+
+    /// 選択中のファイルの diff が 30 行あり、10 行ぶんの枠で 10 行下まで
+    /// スクロールした状態にする。
+    fn scroll_down_in_long_diff(app: &mut App) {
+        app.viewport.set_visible_size(80, 10);
+        app.handle_event(press(KeyCode::Char('J')));
+        assert_eq!(app.viewport.offset(), (10, 0));
+    }
+
+    fn long_diff() -> Result<Vec<crate::git::DiffLine>, git2::Error> {
+        Ok(vec![diff_line("line\n"); 30])
+    }
+
+    #[test]
+    fn j_and_k_on_empty_list_select_nothing_and_keep_error() {
+        let source = ScriptedSource::new().then_files(Err(error("index is corrupt")));
+        let mut app = App::new(source);
+
+        app.handle_event(press(KeyCode::Char('j')));
+        app.handle_event(press(KeyCode::Char('k')));
+
+        assert_eq!(selected(&app), None);
+        assert!(app.highlighted_diff.is_empty());
+        assert_eq!(
+            app.last_error.as_deref(),
+            Some("listing changed files: index is corrupt")
+        );
+    }
+
+    /// 一覧が空なら `j` / `k` は表示位置も diff も触らない。
+    ///
+    /// 一覧が空のまま diff と表示位置が残る状態は通常の操作では作れないため、
+    /// 直接置いて、触ったかどうかが見えるようにする。
+    #[test]
+    fn j_and_k_on_empty_list_leave_scroll_and_diff_untouched() {
+        let mut app = App::new(ScriptedSource::new());
+        app.highlighted_diff = (0..30)
+            .map(|_| HighlightedLine {
+                spans: vec![(Style::default(), "line".to_string())],
+            })
+            .collect();
+        app.viewport.set_content(&app.highlighted_diff);
+        scroll_down_in_long_diff(&mut app);
+
+        app.handle_event(press(KeyCode::Char('j')));
+        app.handle_event(press(KeyCode::Char('k')));
+
+        assert_eq!(app.viewport.offset(), (10, 0));
+        assert_eq!(app.highlighted_diff.len(), 30);
+    }
+
+    /// 末尾で `j` を押しても選択は動かないが、表示位置は先頭に戻り、
+    /// diff は読み直される。
+    #[test]
+    fn j_on_last_file_keeps_selection_but_resets_scroll_and_rereads_diff() {
+        let source = ScriptedSource::new()
+            .then_files(Ok(paths(&["a.rs", "b.rs"])))
+            .then_diff(Ok(vec![diff_line("a\n")]))
+            .then_diff(long_diff())
+            .then_diff(Ok(vec![diff_line("reread\n")]));
+        let mut app = App::new(source);
+        app.handle_event(press(KeyCode::Char('j')));
+        scroll_down_in_long_diff(&mut app);
+
+        app.handle_event(press(KeyCode::Char('j')));
+
+        assert_eq!(selected(&app), Some("b.rs"));
+        assert_eq!(app.viewport.offset(), (0, 0));
+        assert_eq!(app.highlighted_diff.len(), 1);
+    }
+
+    /// 先頭で `k` を押したときも同じ。
+    #[test]
+    fn k_on_first_file_keeps_selection_but_resets_scroll_and_rereads_diff() {
+        let source = ScriptedSource::new()
+            .then_files(Ok(paths(&["a.rs", "b.rs"])))
+            .then_diff(long_diff())
+            .then_diff(Ok(vec![diff_line("reread\n")]));
+        let mut app = App::new(source);
+        scroll_down_in_long_diff(&mut app);
+
+        app.handle_event(press(KeyCode::Char('k')));
+
+        assert_eq!(selected(&app), Some("a.rs"));
+        assert_eq!(app.viewport.offset(), (0, 0));
+        assert_eq!(app.highlighted_diff.len(), 1);
+    }
+
+    #[test]
+    fn j_then_k_walks_through_files_in_order() {
+        let source = ScriptedSource::new().then_files(Ok(paths(&["a.rs", "b.rs", "c.rs"])));
+        let mut app = App::new(source);
+        assert_eq!(selected(&app), Some("a.rs"));
+
+        app.handle_event(press(KeyCode::Char('j')));
+        assert_eq!(selected(&app), Some("b.rs"));
+        app.handle_event(press(KeyCode::Char('j')));
+        assert_eq!(selected(&app), Some("c.rs"));
+        app.handle_event(press(KeyCode::Char('k')));
+        assert_eq!(selected(&app), Some("b.rs"));
+    }
+
+    /// 一覧が縮んで選択位置がはみ出したら、末尾に詰める。
+    #[test]
+    fn refresh_clamps_selection_when_list_shrinks() {
+        let source = ScriptedSource::new()
+            .then_files(Ok(paths(&["a.rs", "b.rs", "c.rs"])))
+            .then_files(Ok(paths(&["a.rs", "b.rs"])));
+        let mut app = App::new(source);
+        app.handle_event(press(KeyCode::Char('j')));
+        app.handle_event(press(KeyCode::Char('j')));
+
+        app.handle_event(press(KeyCode::Char('r')));
+
+        assert_eq!(selected(&app), Some("b.rs"));
+    }
+
+    /// 一覧が伸びても、選択は同じ位置に留まる（同じファイルを追うのではない）。
+    #[test]
+    fn refresh_keeps_selection_index_when_list_grows() {
+        let source = ScriptedSource::new()
+            .then_files(Ok(paths(&["b.rs", "c.rs"])))
+            .then_files(Ok(paths(&["a.rs", "b.rs", "c.rs"])));
+        let mut app = App::new(source);
+        app.handle_event(press(KeyCode::Char('j')));
+        assert_eq!(selected(&app), Some("c.rs"));
+
+        app.handle_event(press(KeyCode::Char('r')));
+
+        assert_eq!(selected(&app), Some("b.rs"));
+    }
+
+    #[test]
+    fn refresh_from_empty_list_selects_first_file() {
+        let source = ScriptedSource::new()
+            .then_files(Ok(Vec::new()))
+            .then_files(Ok(paths(&["a.rs", "b.rs"])));
+        let mut app = App::new(source);
+        assert_eq!(selected(&app), None);
+
+        app.handle_event(press(KeyCode::Char('r')));
+
+        assert_eq!(selected(&app), Some("a.rs"));
+    }
+
+    #[test]
+    fn refresh_to_empty_list_clears_selection_and_diff() {
+        let source = ScriptedSource::new()
+            .then_files(Ok(paths(&["a.rs"])))
+            .then_diff(Ok(vec![diff_line("a\n")]))
+            .then_files(Ok(Vec::new()));
+        let mut app = App::new(source);
+        assert!(!app.highlighted_diff.is_empty());
+
+        app.handle_event(press(KeyCode::Char('r')));
+
+        assert_eq!(selected(&app), None);
+        assert!(app.highlighted_diff.is_empty());
     }
 
     fn press(code: KeyCode) -> Event {
@@ -360,11 +502,11 @@ mod tests {
             app.handle_event(press(KeyCode::Char('J')));
 
             app.handle_event(next.clone());
-            assert_eq!(app.selected_file_path(), Some("b.rs"), "{next:?}");
+            assert_eq!(selected(&app), Some("b.rs"), "{next:?}");
             assert_eq!(app.viewport.offset(), (0, 0), "{next:?}");
 
             app.handle_event(prev.clone());
-            assert_eq!(app.selected_file_path(), Some("a.rs"), "{prev:?}");
+            assert_eq!(selected(&app), Some("a.rs"), "{prev:?}");
         }
     }
 
@@ -387,7 +529,7 @@ mod tests {
         app.handle_event(press(KeyCode::Char('x')));
 
         assert_eq!(app.viewport.offset(), (10, 0));
-        assert_eq!(app.selected_file_path(), Some("a.rs"));
+        assert_eq!(selected(&app), Some("a.rs"));
         assert!(!app.should_quit);
     }
 
